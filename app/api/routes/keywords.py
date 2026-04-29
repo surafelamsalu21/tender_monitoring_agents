@@ -15,7 +15,7 @@ router = APIRouter()
 
 class KeywordCreate(BaseModel):
     keyword: str
-    category: str  # esg or credit_rating
+    category: str  # e.g. sector, activity_fit, geography, source_tag
     description: Optional[str] = None
     case_sensitive: bool = False
 
@@ -36,13 +36,7 @@ async def get_keywords(
     keyword_repo = KeywordRepository()
     
     if category:
-        # Validate category
-        if category not in ["esg", "credit_rating"]:
-            raise HTTPException(status_code=400, detail="Category must be 'esg' or 'credit_rating'")
-        
         if active_only:
-            keywords_list = keyword_repo.get_keywords_by_category(db, category)
-            # Get full keyword objects for active keywords
             keywords = db.query(Keyword).filter(
                 Keyword.category == category,
                 Keyword.is_active == True
@@ -94,10 +88,6 @@ async def create_keyword(keyword_data: KeywordCreate, db: Session = Depends(get_
     """Create a new keyword"""
     keyword_repo = KeywordRepository()
     
-    # Validate category
-    if keyword_data.category not in ["esg", "credit_rating"]:
-        raise HTTPException(status_code=400, detail="Category must be 'esg' or 'credit_rating'")
-    
     # Check if keyword already exists in the same category
     existing = db.query(Keyword).filter(
         Keyword.keyword == keyword_data.keyword,
@@ -127,10 +117,7 @@ async def update_keyword(keyword_id: int, keyword_data: KeywordUpdate, db: Sessi
     """Update a keyword"""
     keyword_repo = KeywordRepository()
     
-    # Validate category if provided
     update_data = keyword_data.dict(exclude_unset=True)
-    if 'category' in update_data and update_data['category'] not in ["esg", "credit_rating"]:
-        raise HTTPException(status_code=400, detail="Category must be 'esg' or 'credit_rating'")
     
     keyword = keyword_repo.update_keyword(db, keyword_id, **update_data)
     
@@ -158,23 +145,16 @@ async def delete_keyword(keyword_id: int, db: Session = Depends(get_db)):
 @router.get("/categories/stats")
 async def get_keyword_stats(db: Session = Depends(get_db)):
     """Get keyword statistics by category"""
-    esg_count = db.query(Keyword).filter(
-        Keyword.category == "esg",
-        Keyword.is_active == True
-    ).count()
-    
-    credit_count = db.query(Keyword).filter(
-        Keyword.category == "credit_rating",
-        Keyword.is_active == True
-    ).count()
-    
     total_count = db.query(Keyword).filter(Keyword.is_active == True).count()
     inactive_count = db.query(Keyword).filter(Keyword.is_active == False).count()
+    categories = [
+        row[0]
+        for row in db.query(Keyword.category).distinct().all()
+        if row[0] is not None
+    ]
     
     return {
-        "esg_keywords": esg_count,
-        "credit_rating_keywords": credit_count,
         "total_active": total_count,
         "total_inactive": inactive_count,
-        "categories": ["esg", "credit_rating"]
+        "categories": categories,
     }

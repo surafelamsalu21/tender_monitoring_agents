@@ -83,19 +83,15 @@ class TenderScheduler:
                 logger.warning("No active monitored pages found")
                 return
             
-            # Step 2: Get keywords for categorization
-            esg_keywords = self.keyword_repo.get_keywords_by_category(db, "esg")
-            credit_keywords = self.keyword_repo.get_keywords_by_category(db, "credit_rating")
-            
             logger.info(f"Processing {len(pages)} pages")
-            logger.info(f"Keywords: {len(esg_keywords)} ESG, {len(credit_keywords)} Credit Rating")
+            logger.info("Using checklist screening model (v1_checklist)")
             
             # Step 3: Process each monitored page through extended pipeline
             total_new_tenders = 0
             all_email_compositions = []
             
             for page in pages:
-                page_result = await self._process_page_extended_pipeline(db, page, esg_keywords, credit_keywords)
+                page_result = await self._process_page_extended_pipeline(db, page)
                 total_new_tenders += page_result['new_tenders_count']
                 all_email_compositions.extend(page_result['email_compositions'])
             
@@ -112,8 +108,7 @@ class TenderScheduler:
         finally:
             db.close()
     
-    async def _process_page_extended_pipeline(self, db: Session, page: MonitoredPage, 
-                                            esg_keywords: List, credit_keywords: List) -> Dict[str, Any]:
+    async def _process_page_extended_pipeline(self, db: Session, page: MonitoredPage) -> Dict[str, Any]:
         """
         Process a single monitored page through the extended pipeline with Agent 3
         
@@ -169,8 +164,6 @@ class TenderScheduler:
                         page_content=scrape_result['markdown'],
                         page_url=page.url,
                         page_id=page.id,
-                        esg_keywords=esg_keywords,
-                        credit_keywords=credit_keywords,
                         tender_repo=self.tender_repo,
                         db=db
                     )
@@ -292,47 +285,28 @@ class TenderScheduler:
         try:
             logger.info("Checking for unnotified tenders (fallback notifications)...")
             
-            # Get unnotified ESG tenders
-            esg_tenders = self.tender_repo.get_unnotified_tenders(db, "esg")
-            if esg_tenders:
-                logger.info(f"Sending fallback ESG notification for {len(esg_tenders)} tenders")
-                success = await self.email_service.send_fallback_notifications(esg_tenders, "esg")
-                if success:
-                    for tender in esg_tenders:
-                        self.tender_repo.mark_tender_notified(db, tender.id)
-                    logger.info(f"Fallback ESG notifications sent for {len(esg_tenders)} tenders")
-                else:
-                    logger.error("Failed to send fallback ESG notifications")
-            
-            # Get unnotified Credit Rating tenders
-            credit_tenders = self.tender_repo.get_unnotified_tenders(db, "credit_rating")
-            if credit_tenders:
-                logger.info(f"Sending fallback Credit Rating notification for {len(credit_tenders)} tenders")
-                success = await self.email_service.send_fallback_notifications(credit_tenders, "credit_rating")
-                if success:
-                    for tender in credit_tenders:
-                        self.tender_repo.mark_tender_notified(db, tender.id)
-                    logger.info(f"Fallback Credit Rating notifications sent for {len(credit_tenders)} tenders")
-                else:
-                    logger.error("Failed to send fallback Credit Rating notifications")
-            
-            # Get unnotified 'both' category tenders
-            both_tenders = self.tender_repo.get_unnotified_tenders(db, "both")
-            if both_tenders:
-                logger.info(f"Sending fallback notifications to both teams for {len(both_tenders)} tenders")
-                # Send to both teams
-                esg_success = await self.email_service.send_fallback_notifications(both_tenders, "esg")
-                credit_success = await self.email_service.send_fallback_notifications(both_tenders, "credit_rating")
-                
-                if esg_success and credit_success:
-                    for tender in both_tenders:
-                        self.tender_repo.mark_tender_notified(db, tender.id)
-                    logger.info(f"Fallback notifications sent to both teams for {len(both_tenders)} tenders")
-                else:
-                    logger.error("Failed to send fallback notifications to both teams")
-            
-            if not esg_tenders and not credit_tenders and not both_tenders:
-                logger.info("No unnotified tenders found for fallback notifications")
+            unnotified_tenders = self.tender_repo.get_unnotified_tenders(db, only_passed=True)
+            if not unnotified_tenders:
+                logger.info("No unnotified screened opportunities found for fallback notifications")
+                return
+
+            logger.info(
+                "Sending fallback screening notification for %s opportunities",
+                len(unnotified_tenders),
+            )
+            success = await self.email_service.send_fallback_notifications(
+                unnotified_tenders,
+                "screening_opportunities",
+            )
+            if success:
+                for tender in unnotified_tenders:
+                    self.tender_repo.mark_tender_notified(db, tender.id)
+                logger.info(
+                    "Fallback notifications sent for %s opportunities",
+                    len(unnotified_tenders),
+                )
+            else:
+                logger.error("Failed to send fallback screening notifications")
                 
         except Exception as e:
             logger.error(f"Error sending fallback notifications: {e}")
@@ -390,9 +364,7 @@ def get_extended_pipeline_status():
         
         # Get unnotified tenders
         tender_repo = TenderRepository()
-        unnotified_esg = len(tender_repo.get_unnotified_tenders(db, "esg"))
-        unnotified_credit = len(tender_repo.get_unnotified_tenders(db, "credit_rating"))
-        unnotified_both = len(tender_repo.get_unnotified_tenders(db, "both"))
+        unnotified_screened = len(tender_repo.get_unnotified_tenders(db, only_passed=True))
         
         # Get recent detailed tenders (for Agent 3 email composition)
         recent_detailed = db.query(DetailedTender).order_by(DetailedTender.created_at.desc()).limit(5).all()
@@ -403,10 +375,8 @@ def get_extended_pipeline_status():
             "agents_active": ["Agent1_Extract", "Agent2_Details", "Agent3_EmailComposer"],
             "recent_crawls": len(recent_logs),
             "unnotified_tenders": {
-                "esg": unnotified_esg,
-                "credit_rating": unnotified_credit,
-                "both": unnotified_both,
-                "total": unnotified_esg + unnotified_credit + unnotified_both
+                "screened_passed": unnotified_screened,
+                "total": unnotified_screened,
             },
             "recent_detailed_extractions": len(recent_detailed),
             "last_crawl": recent_logs[0].started_at.isoformat() if recent_logs else None,

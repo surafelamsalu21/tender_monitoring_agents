@@ -63,18 +63,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tende
           trend={`+${recentTenders.length} today`}
         />
         <StatCard
-          title="ESG Tenders"
-          value={stats.esg}
+          title="Passed Screening"
+          value={stats.passed}
           icon={Leaf}
           color="bg-green-500"
-          trend={`${Math.round((stats.esg / stats.total * 100) || 0)}% of total`}
+          trend={`${Math.round((stats.passed / stats.total * 100) || 0)}% of total`}
         />
         <StatCard
-          title="Credit Rating"
-          value={stats.credit}
+          title="Failed Screening"
+          value={stats.failed}
           icon={CreditCard}
           color="bg-purple-500"
-          trend={`${Math.round((stats.credit / stats.total * 100) || 0)}% of total`}
+          trend={`${Math.round((stats.failed / stats.total * 100) || 0)}% of total`}
         />
         <StatCard
           title="Active Pages"
@@ -226,12 +226,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tende
               <div key={tender.id} className="flex items-center justify-between py-3 border-b border-gray-100 last:border-b-0">
                 <div className="flex items-center">
                   <div className={`w-3 h-3 rounded-full mr-4 ${
-                    tender.category === 'esg' ? 'bg-green-500' : 
-                    tender.category === 'credit_rating' ? 'bg-purple-500' : 'bg-blue-500'
+                    tender.passes_screening ? 'bg-green-500' : 'bg-purple-500'
                   }`}></div>
                   <div>
                     <p className="text-sm font-medium text-gray-900">
-                      New {tender.category === 'esg' ? 'ESG' : tender.category === 'credit_rating' ? 'Credit Rating' : 'Both'} tender extracted
+                      {tender.passes_screening ? 'Passed' : 'Failed'} screening
                     </p>
                     <p className="text-xs text-gray-500">{tender.title.substring(0, 60)}...</p>
                   </div>

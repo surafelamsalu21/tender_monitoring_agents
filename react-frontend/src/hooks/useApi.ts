@@ -6,7 +6,7 @@ export const useApiData = () => {
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [pages, setPages] = useState<Page[]>([]);
   const [keywords, setKeywords] = useState<Keyword[]>([]);
-  const [stats, setStats] = useState<Stats>({ total: 0, esg: 0, credit: 0, pages: 0 });
+  const [stats, setStats] = useState<Stats>({ total: 0, passed: 0, failed: 0, pages: 0 });
   const [systemStatus, setSystemStatus] = useState<SystemStatus>({ status: 'unknown', message: '' });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -51,12 +51,12 @@ export const useApiData = () => {
   }, []);
 
   const updateStats = useCallback(() => {
-    const esgCount = tenders.filter(t => t.category === 'esg').length;
-    const creditCount = tenders.filter(t => t.category === 'credit_rating').length;
+    const passedCount = tenders.filter(t => t.passes_screening).length;
+    const failedCount = tenders.filter(t => t.passes_screening === false).length;
     setStats({
       total: tenders.length,
-      esg: esgCount,
-      credit: creditCount,
+      passed: passedCount,
+      failed: failedCount,
       pages: pages.length
     });
   }, [tenders, pages]);

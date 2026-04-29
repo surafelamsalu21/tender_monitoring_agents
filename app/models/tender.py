@@ -36,10 +36,26 @@ class Tender(Base):
     
     id = Column(Integer, primary_key=True, index=True)  # Tender PK
     title = Column(String(500), nullable=False, index=True)  # Tender title, required
-    url = Column(String(1000), nullable=False, unique=True, index=True)  # Unique URL to the tender resource
+    url = Column(String(1000), nullable=False, index=True)  # Source/detail URL (not unique)
+    opportunity_fingerprint = Column(String(64), nullable=True, unique=True, index=True)  # Stable identity hash
     tender_date = Column(DateTime, nullable=True, index=True)  # Optional date of tender issuance/submission
-    category = Column(String(50), nullable=False, index=True)  # 'esg', 'credit_rating', or 'both'
+    # Legacy category retained for backward compatibility with historical records.
+    category = Column(String(50), nullable=True, index=True)
     description = Column(Text, nullable=True)  # Raw description
+
+    # Basic opportunity capture fields from screening Step 3.
+    source = Column(String(255), nullable=True, index=True)
+    country = Column(String(255), nullable=True, index=True)
+    opportunity_type = Column(String(100), nullable=True, index=True)
+    estimated_budget = Column(String(255), nullable=True)
+
+    # Screening checklist persistence.
+    screening_version = Column(String(50), nullable=False, default="legacy", index=True)
+    screening_yes_count = Column(Integer, default=0, index=True)
+    passes_screening = Column(Boolean, default=False, index=True)
+    screening_step1 = Column(JSON, nullable=True)  # quick relevance filter criteria
+    screening_step2 = Column(JSON, nullable=True)  # flags/tags
+    screening_step3 = Column(JSON, nullable=True)  # captured baseline opportunity data
     
     # Matched keyword information (JSON for API, count for fast filters/stats)
     matched_keywords_json = Column(JSON, nullable=True)  # List of matched keyword strings (JSON-serializable)
@@ -66,8 +82,11 @@ class Tender(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)  # Last update timestamp
     
     def __repr__(self):
-        # Displays a short summary useful for debugging: id, abbreviated title, category, and keyword count
-        return f"<Tender(id={self.id}, title='{self.title[:50]}...', category='{self.category}', keywords={self.keyword_count})>"
+        # Displays a short summary useful for debugging.
+        return (
+            f"<Tender(id={self.id}, title='{self.title[:50]}...', "
+            f"passes_screening={self.passes_screening}, yes_count={self.screening_yes_count})>"
+        )
 
 class DetailedTender(Base):
     """
@@ -90,6 +109,8 @@ class DetailedTender(Base):
     detailed_description = Column(Text, nullable=True)    # Enriched or normalized description
     requirements = Column(Text, nullable=True)            # Requirements parsed/summarized
     deadline = Column(DateTime, nullable=True)            # Deadline if parsed
+    tender_value = Column(String(255), nullable=True)     # Budget/value summary
+    duration = Column(String(255), nullable=True)         # Duration/timeline summary
     contact_info = Column(Text, nullable=True)            # Extracted contact information
     additional_details = Column(Text, nullable=True)      # Free-form extra info
 

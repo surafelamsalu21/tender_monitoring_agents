@@ -82,7 +82,7 @@ export const Settings: React.FC = () => {
       if (response.success && response.settings) {
         console.log('Setting email settings from API:', response.settings);
         setEmailSettings({
-          esg_emails: response.settings.esg_emails || [],
+          esg_emails: response.settings.opportunity_emails || response.settings.esg_emails || [],
           credit_rating_emails: response.settings.credit_rating_emails || [],
           notification_preferences: response.settings.notification_preferences || {
             send_for_new_tenders: true,
@@ -344,7 +344,7 @@ export const Settings: React.FC = () => {
     }
   };
 
-  const sendTestEmail = async (email: string, category: 'esg' | 'credit_rating') => {
+  const sendTestEmail = async (email: string, category: 'screening_opportunities') => {
     setTestingEmail(email);
     try {
       const response = await apiService.sendTestEmail({ email, category });
@@ -362,7 +362,7 @@ export const Settings: React.FC = () => {
     }
   };
 
-  const renderEmailList = (emails: string[], category: 'esg' | 'credit_rating', removeFunction: (email: string) => void) => (
+  const renderEmailList = (emails: string[], category: 'screening_opportunities', removeFunction: (email: string) => void) => (
     <div className="space-y-2">
       {emails.length === 0 ? (
         <div className="text-center py-6 text-gray-500 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
@@ -491,7 +491,7 @@ export const Settings: React.FC = () => {
             </div>
             
             {/* ESG Email List */}
-            {renderEmailList(emailSettings.esg_emails, 'esg', removeEsgEmail)}
+            {renderEmailList(emailSettings.esg_emails, 'screening_opportunities', removeEsgEmail)}
           </div>
 
           {/* Credit Rating Team Emails */}
@@ -539,7 +539,7 @@ export const Settings: React.FC = () => {
             </div>
             
             {/* Credit Email List */}
-            {renderEmailList(emailSettings.credit_rating_emails, 'credit_rating', removeCreditEmail)}
+            {renderEmailList(emailSettings.credit_rating_emails, 'screening_opportunities', removeCreditEmail)}
           </div>
 
           {/* Notification Preferences */}

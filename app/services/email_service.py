@@ -245,7 +245,7 @@ class EnhancedEmailService:
 
         Args:
             tenders: List of Tender ORM instances
-            category: Team/category, e.g., 'esg' or 'credit_rating'
+            category: Notification stream/category (e.g., 'screening_opportunities')
 
         Returns:
             True if process completed (regardless of recipient-level errors), False on early runtime error
@@ -334,7 +334,10 @@ class EnhancedEmailService:
             HTML string for use in email body
         """
         # Human-readable team label
-        team_name = "ESG Team" if category == "esg" else "Credit Rating Team"
+        if category == "screening_opportunities":
+            team_name = "Opportunities Team"
+        else:
+            team_name = "Opportunity Review Team"
 
         html_content = f"""
         <html>
@@ -365,7 +368,7 @@ class EnhancedEmailService:
             <div class="tender">
                 <div class="tender-title">{tender.title}</div>
                 <div style="margin: 5px 0;">
-                    <span class="tender-category">{tender.category.upper()}</span>
+                    <span class="tender-category">SCREENED OPPORTUNITY</span>
                     <span class="tender-date">Date: {tender_date}</span>
                 </div>
                 <div class="tender-description">
@@ -427,25 +430,50 @@ class EnhancedEmailService:
             # Prepare canned or provided test tender data
             if not test_tender_data:
                 test_tender_data = {
-                    'title': 'Test ESG Consulting Services Tender',
-                    'url': 'https://example.com/test-tender',
-                    'category': 'esg',
-                    'description': 'Test tender for ESG consulting and sustainability reporting services',
-                    'matched_keywords': ['environmental', 'sustainability', 'ESG']
+                    "title": "Test Screening Opportunity - Rural Productive Use of Energy",
+                    "url": "https://example.com/test-screening-opportunity",
+                    "category": "screening_opportunities",
+                    "description": "Test opportunity aligned to the 3-step screening checklist workflow.",
+                    "matched_keywords": ["off-grid energy", "PUE", "SMEs", "Ethiopia"],
+                    "screening": {
+                        "step1": {
+                            "mission_alignment": True,
+                            "sector_relevance": True,
+                            "activity_fit": True,
+                            "geographic_fit": True,
+                            "eligibility_quick_check": True,
+                        },
+                        "yes_count": 5,
+                        "passes_filter": True,
+                        "step2": {
+                            "opportunity_characteristics": ["implementation_heavy"],
+                            "strategic_signals": ["private_sector_focused"],
+                            "potential_concerns": [],
+                        },
+                        "step3": {
+                            "title": "Test Screening Opportunity - Rural Productive Use of Energy",
+                            "source": "Internal test source",
+                            "country": "Ethiopia",
+                            "type": "consultancy",
+                            "deadline": "2026-06-30",
+                            "estimated_budget": "USD 50,000 - 100,000",
+                            "link": "https://example.com/test-screening-opportunity",
+                        },
+                    },
                 }
 
             # Sample additional details, as Agent 3 expects rich structure
             test_detailed_info = {
-                'detailed_title': 'Comprehensive ESG Consulting and Sustainability Reporting Services',
-                'detailed_description': 'Full-service ESG consulting including materiality assessment, stakeholder engagement, and comprehensive sustainability reporting aligned with international standards.',
-                'requirements': 'Experience in ESG consulting, knowledge of SASB/GRI standards, demonstrated track record',
-                'deadline': '2025-07-15',
-                'tender_value': '50,000 - 100,000 USD',
+                "detailed_title": "Rural Productive Use of Energy Support for SMEs",
+                "detailed_description": "Implementation-focused assignment to support SMEs with productive use of energy interventions, market systems facilitation, and partner coordination.",
+                "requirements": "Experience in SME support, private sector development, market systems, and energy access programs",
+                "deadline": "2026-06-30",
+                "tender_value": "USD 50,000 - 100,000",
                 'contact_info': {
-                    'organization': 'Test Organization',
-                    'contact_person': 'Test Contact',
-                    'email': 'test@example.com',
-                    'phone': '+1-555-0123'
+                    "organization": "Precise Test Programs",
+                    "contact_person": "Screening Test Contact",
+                    "email": "test@example.com",
+                    "phone": "+251-11-000-0000",
                 }
             }
 

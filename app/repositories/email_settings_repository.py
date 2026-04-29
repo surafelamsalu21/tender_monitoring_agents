@@ -18,22 +18,30 @@ class EmailSettingsRepository:
     def get_email_settings(self, db: Session) -> Dict[str, Any]:
         """Get current email settings from database"""
         try:
-            # Query settings from database
-            esg_setting = db.query(EmailNotificationSettings).filter(
-                EmailNotificationSettings.setting_key == 'esg_emails'
-            ).first()
-            
-            credit_setting = db.query(EmailNotificationSettings).filter(
-                EmailNotificationSettings.setting_key == 'credit_emails'
+            opportunity_setting = db.query(EmailNotificationSettings).filter(
+                EmailNotificationSettings.setting_key == 'opportunity_emails'
             ).first()
             
             prefs_setting = db.query(EmailNotificationSettings).filter(
                 EmailNotificationSettings.setting_key == 'preferences'
             ).first()
             
+            if opportunity_setting and opportunity_setting.setting_value:
+                opportunity_emails = opportunity_setting.setting_value
+            else:
+                # Backward compatibility for previously split recipient lists.
+                esg_setting = db.query(EmailNotificationSettings).filter(
+                    EmailNotificationSettings.setting_key == "esg_emails"
+                ).first()
+                credit_setting = db.query(EmailNotificationSettings).filter(
+                    EmailNotificationSettings.setting_key == "credit_emails"
+                ).first()
+                esg_emails = esg_setting.setting_value if esg_setting and esg_setting.setting_value else []
+                credit_emails = credit_setting.setting_value if credit_setting and credit_setting.setting_value else []
+                opportunity_emails = list(dict.fromkeys([*esg_emails, *credit_emails]))
+
             return {
-                'esg_emails': esg_setting.setting_value if esg_setting else [],
-                'credit_rating_emails': credit_setting.setting_value if credit_setting else [],
+                'opportunity_emails': opportunity_emails,
                 'notification_preferences': prefs_setting.setting_value if prefs_setting else {
                     "send_for_new_tenders": True,
                     "send_daily_summary": True,
@@ -44,8 +52,7 @@ class EmailSettingsRepository:
             logger.error(f"Error retrieving email settings from database: {e}")
             # Return default settings if database query fails
             return {
-                'esg_emails': [],
-                'credit_rating_emails': [],
+                'opportunity_emails': [],
                 'notification_preferences': {
                     "send_for_new_tenders": True,
                     "send_daily_summary": True,
@@ -56,37 +63,21 @@ class EmailSettingsRepository:
     def save_email_settings(self, db: Session, settings: Dict[str, Any]) -> bool:
         """Save email settings to database"""
         try:
-            # Save or update ESG emails
-            esg_setting = db.query(EmailNotificationSettings).filter(
-                EmailNotificationSettings.setting_key == 'esg_emails'
+            # Save or update unified opportunity recipient list.
+            opportunity_setting = db.query(EmailNotificationSettings).filter(
+                EmailNotificationSettings.setting_key == 'opportunity_emails'
             ).first()
-            
-            if esg_setting:
-                esg_setting.setting_value = settings.get('esg_emails', [])
-                esg_setting.updated_at = datetime.utcnow()
+
+            if opportunity_setting:
+                opportunity_setting.setting_value = settings.get('opportunity_emails', [])
+                opportunity_setting.updated_at = datetime.utcnow()
             else:
-                esg_setting = EmailNotificationSettings(
-                    setting_key='esg_emails',
-                    setting_value=settings.get('esg_emails', []),
-                    description='ESG team email addresses for notifications'
+                opportunity_setting = EmailNotificationSettings(
+                    setting_key='opportunity_emails',
+                    setting_value=settings.get('opportunity_emails', []),
+                    description='Opportunity notifications recipient email addresses'
                 )
-                db.add(esg_setting)
-            
-            # Save or update Credit Rating emails
-            credit_setting = db.query(EmailNotificationSettings).filter(
-                EmailNotificationSettings.setting_key == 'credit_emails'
-            ).first()
-            
-            if credit_setting:
-                credit_setting.setting_value = settings.get('credit_rating_emails', [])
-                credit_setting.updated_at = datetime.utcnow()
-            else:
-                credit_setting = EmailNotificationSettings(
-                    setting_key='credit_emails',
-                    setting_value=settings.get('credit_rating_emails', []),
-                    description='Credit Rating team email addresses for notifications'
-                )
-                db.add(credit_setting)
+                db.add(opportunity_setting)
             
             # Save or update preferences
             prefs_setting = db.query(EmailNotificationSettings).filter(
@@ -116,7 +107,10 @@ class EmailSettingsRepository:
     def get_emails_by_category(self, db: Session, category: str) -> List[str]:
         """Get email addresses for a specific category"""
         try:
-            setting_key = 'esg_emails' if category == 'esg' else 'credit_emails'
+            setting_key = "opportunity_emails"
+            if category not in ["screening_opportunities", "opportunity", "opportunities"]:
+                # Legacy support: map older categories to unified recipient list.
+                setting_key = "opportunity_emails"
             
             setting = db.query(EmailNotificationSettings).filter(
                 EmailNotificationSettings.setting_key == setting_key
@@ -124,8 +118,17 @@ class EmailSettingsRepository:
             
             if setting and setting.setting_value:
                 return setting.setting_value
-            else:
-                return []
+
+            # Backward compatibility while old keys still exist in DB.
+            esg_setting = db.query(EmailNotificationSettings).filter(
+                EmailNotificationSettings.setting_key == "esg_emails"
+            ).first()
+            credit_setting = db.query(EmailNotificationSettings).filter(
+                EmailNotificationSettings.setting_key == "credit_emails"
+            ).first()
+            esg_emails = esg_setting.setting_value if esg_setting and esg_setting.setting_value else []
+            credit_emails = credit_setting.setting_value if credit_setting and credit_setting.setting_value else []
+            return list(dict.fromkeys([*esg_emails, *credit_emails]))
                 
         except Exception as e:
             logger.error(f"Error retrieving emails for category {category}: {e}")
@@ -134,7 +137,7 @@ class EmailSettingsRepository:
     def add_email_to_category(self, db: Session, category: str, email: str) -> bool:
         """Add email to specific category - FIXED VERSION"""
         try:
-            setting_key = 'esg_emails' if category == 'esg' else 'credit_emails'
+            setting_key = "opportunity_emails"
             
             setting = db.query(EmailNotificationSettings).filter(
                 EmailNotificationSettings.setting_key == setting_key
@@ -149,19 +152,19 @@ class EmailSettingsRepository:
                     current_emails.append(email)
                     setting.setting_value = current_emails
                     setting.updated_at = datetime.utcnow()
-                    logger.info(f"Adding email {email} to existing {category} category")
+                    logger.info(f"Adding email {email} to unified {category} recipient list")
                 else:
-                    logger.info(f"Email {email} already exists in {category} category")
+                    logger.info(f"Email {email} already exists in {category} recipient list")
                     return True  # Still return True since email is in the list
             else:
                 # Create new setting with this email
                 setting = EmailNotificationSettings(
                     setting_key=setting_key,
                     setting_value=[email],
-                    description=f'{category.upper()} team email addresses for notifications'
+                    description="Opportunity notifications recipient email addresses",
                 )
                 db.add(setting)
-                logger.info(f"Creating new {category} category with email {email}")
+                logger.info(f"Creating new recipient list with email {email}")
             
             db.commit()
             logger.info(f"Successfully added email {email} to {category} category")
@@ -175,7 +178,7 @@ class EmailSettingsRepository:
     def remove_email_from_category(self, db: Session, category: str, email: str) -> bool:
         """Remove email from specific category - FIXED VERSION"""
         try:
-            setting_key = 'esg_emails' if category == 'esg' else 'credit_emails'
+            setting_key = "opportunity_emails"
             
             setting = db.query(EmailNotificationSettings).filter(
                 EmailNotificationSettings.setting_key == setting_key

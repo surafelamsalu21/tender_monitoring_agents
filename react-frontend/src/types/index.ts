@@ -6,7 +6,17 @@ export interface Tender {
   date_published?: string;  // For backward compatibility
   tender_date?: string;    // New field from API
   description?: string;    // Added from API
-  category: 'esg' | 'credit_rating' | 'both';
+  category?: string; // legacy field
+  source?: string;
+  country?: string;
+  opportunity_type?: 'grant' | 'consultancy' | 'other' | string;
+  estimated_budget?: string;
+  screening_version?: string;
+  screening_yes_count?: number;
+  passes_screening?: boolean;
+  screening_step1?: ScreeningStep1;
+  screening_step2?: ScreeningStep2;
+  screening_step3?: ScreeningStep3;
   page_id: number;
   page_name?: string;      // Added from API
   is_processed: boolean;   // Added from API
@@ -63,6 +73,30 @@ export interface ContactInfo {
   address?: string;
 }
 
+export interface ScreeningStep1 {
+  mission_alignment?: boolean;
+  sector_relevance?: boolean;
+  activity_fit?: boolean;
+  geographic_fit?: boolean;
+  eligibility_quick_check?: boolean;
+}
+
+export interface ScreeningStep2 {
+  opportunity_characteristics?: string[];
+  strategic_signals?: string[];
+  potential_concerns?: string[];
+}
+
+export interface ScreeningStep3 {
+  title?: string;
+  source?: string;
+  country?: string;
+  type?: string;
+  deadline?: string;
+  estimated_budget?: string;
+  link?: string;
+}
+
 export interface Page {
   id: number;
   url: string;
@@ -75,15 +109,15 @@ export interface Page {
 export interface Keyword {
   id: number;
   keyword: string;
-  category: 'esg' | 'credit_rating';
+  category: string;
   created_at: string;
   updated_at: string;
 }
 
 export interface Stats {
   total: number;
-  esg: number;
-  credit: number;
+  passed: number;
+  failed: number;
   pages: number;
 }
 
@@ -94,4 +128,4 @@ export interface SystemStatus {
 
 // UPDATED: Added 'test-crawler' to TabType
 export type TabType = 'dashboard' | 'tenders' | 'pages' | 'keywords' | 'test-crawler' | 'settings';
-export type CategoryType = 'all' | 'esg' | 'credit_rating';
+export type CategoryType = 'all' | 'passed' | 'failed';

@@ -66,23 +66,23 @@ class TenderExtractionAgent:
             
             # Step 3: Build the user message with clear extraction and categorization instructions
             user_message = f"""
-KEYWORDS TO MATCH (MANDATORY):
-=============================
-ESG Keywords: {', '.join(esg_keywords)}
-Credit Rating Keywords: {', '.join(credit_keywords)}
+SCREENING SIGNAL KEYWORDS (context hints only):
+==============================================
+Signal Set A: {', '.join(esg_keywords)}
+Signal Set B: {', '.join(credit_keywords)}
 
 CONTENT TO ANALYZE:
 ==================
 {page_content}
 
-CRITICAL INSTRUCTION: 
-- ONLY extract tenders that contain at least ONE keyword from the lists above
-- If a tender doesn't mention these specific keywords, DO NOT include it
-- Categorize as either 'esg' OR 'credit_rating' (no 'both' category)
-- If tender has keywords from both categories, choose the category with MORE keyword matches
-- Return EMPTY ARRAY [] if no tenders contain the keywords
+CRITICAL INSTRUCTION:
+- Apply the 3-step Screening Checklist
+- Step 1: keep opportunities only when at least 3 of 5 checks are YES
+- Step 2: add non-blocking flags only
+- Step 3: capture title/source/country/type/deadline/estimated_budget/link
+- Return EMPTY ARRAY [] if no opportunities pass Step 1
 
-Return ONLY the JSON array with tenders that contain the specified keywords.
+Return ONLY the JSON array.
 """
             
             # Step 4: Submit the formatted message to the LLM and get a response
@@ -148,66 +148,58 @@ Return ONLY the JSON array with tenders that contain the specified keywords.
                                       credit_keywords: List[str],
                                       include_all_tenders: bool) -> str:
         """
-        Build the prompt presented to the LLM. This prompt directs the LLM to enforce mandatory
-        keyword-based extraction, with only two allowable categories: 'esg' and 'credit_rating'.
-        There is never a 'both' category.
+        Build the prompt presented to the LLM. This prompt applies the 3-step screening checklist
+        and returns standardized screening output.
 
         Args:
-            esg_keywords: List of ESG-related keywords as strings.
-            credit_keywords: List of credit rating-related keywords.
+            esg_keywords: Legacy signal-set A keywords.
+            credit_keywords: Legacy signal-set B keywords.
             include_all_tenders: If true, disables filtering (for test purposes).
 
         Returns:
             Formatted prompt string for LLM usage.
         """
         
-        esg_keywords_str = ", ".join(esg_keywords)
-        credit_keywords_str = ", ".join(credit_keywords)
+        signal_a_str = ", ".join(esg_keywords)
+        signal_b_str = ", ".join(credit_keywords)
         
         keyword_filtering_rules = ""
         if not include_all_tenders:
             keyword_filtering_rules = f"""
-MANDATORY KEYWORD FILTERING:
-============================
-🚨 CRITICAL: ONLY extract tenders that contain these EXACT keywords:
+CHECKLIST FILTERING MODE:
+=========================
+Use these as optional signal hints if useful:
+- Signal Set A: {signal_a_str}
+- Signal Set B: {signal_b_str}
 
-ESG KEYWORDS (case-insensitive): {esg_keywords_str}
-CREDIT RATING KEYWORDS (case-insensitive): {credit_keywords_str}
-
-STRICT RULES:
-1. The tender title OR description MUST contain at least ONE keyword from either list
-2. If NO keywords are found, DO NOT extract the tender
-3. Be case-insensitive but look for EXACT word matches
-4. Partial matches are OK (e.g., "environmental" matches "environment")
-5. If you find ZERO tenders with keywords, return EMPTY ARRAY []
-
-CATEGORIZATION RULES (NO 'BOTH' CATEGORY):
-==========================================
-- If tender contains ONLY ESG keywords → category: "esg"
-- If tender contains ONLY Credit Rating keywords → category: "credit_rating"
-- If tender contains keywords from BOTH lists → choose category with MORE keyword matches
-- If equal matches from both → default to "esg"
-
-EXAMPLE MATCHES:
-- "Environmental impact assessment" → Contains "environmental" (ESG) → category: "esg"
-- "Credit risk evaluation" → Contains "credit" (Credit Rating) → category: "credit_rating"
-- "Environmental credit assessment" → Contains both → count matches → assign to category with more
-- "Construction project management" → NO KEYWORDS → DO NOT EXTRACT
+Apply this exact screening process:
+1) Step 1 Quick Relevance Filter (Yes/No):
+   - mission_alignment
+   - sector_relevance
+   - activity_fit
+   - geographic_fit
+   - eligibility_quick_check
+2) Keep opportunity ONLY if yes_count >= 3
+3) Step 2 flags are non-blocking tags only
+4) Step 3 capture baseline fields
 """
         else:
             keyword_filtering_rules = """
-KEYWORD FILTERING: DISABLED
-===========================
-Extract ALL tenders regardless of keywords (testing mode).
-Categorize randomly as 'esg' or 'credit_rating'.
+CHECKLIST FILTERING: DISABLED
+=============================
+Extract all opportunities, but still compute Step 1 yes_count and passes_filter.
 """
         
-        return f"""You are a STRICT tender extraction specialist. Your task is to:
+        return f"""You are a strict opportunity screening specialist.
 
-1. ONLY extract tenders that contain the specified keywords
-2. Categorize each tender as EITHER 'esg' OR 'credit_rating' (never 'both')
-3. Translate all content to English
-4. Return structured JSON format
+Purpose:
+- Identify and shortlist relevant opportunities for further review.
+
+Core tasks:
+1. Apply the 3-step Screening Checklist
+2. Keep only opportunities where Step 1 has at least 3 YES (unless testing mode)
+3. Translate all extracted text to English
+4. Return structured JSON only
 
 {keyword_filtering_rules}
 
@@ -217,7 +209,8 @@ EXTRACTION REQUIREMENTS:
 2. TRANSLATE all non-English content to English
 3. Keep URLs unchanged
 4. Convert dates to YYYY-MM-DD format
-5. Extract ONLY tenders that match the keyword criteria
+5. For Step 2, only tag; do not eliminate
+6. For Step 3, capture source/country/type/deadline/estimated_budget/link
 
 OUTPUT FORMAT:
 ==============
@@ -228,10 +221,35 @@ Return ONLY a JSON array in this exact format:
     "url": "full URL to tender page",
     "date": "YYYY-MM-DD or null",
     "description": "English translated brief description",
-    "category": "esg|credit_rating",
-    "matched_keywords": ["keyword1", "keyword2"],
-    "esg_keyword_count": 2,
+    "category": "screening_opportunities",
+    "matched_keywords": ["optional_signal_or_keyword"],
+    "esg_keyword_count": 0,
     "credit_keyword_count": 0,
+    "screening": {{
+      "step1": {{
+        "mission_alignment": true/false,
+        "sector_relevance": true/false,
+        "activity_fit": true/false,
+        "geographic_fit": true/false,
+        "eligibility_quick_check": true/false
+      }},
+      "yes_count": 0,
+      "passes_filter": true/false,
+      "step2": {{
+        "opportunity_characteristics": ["..."],
+        "strategic_signals": ["..."],
+        "potential_concerns": ["..."]
+      }},
+      "step3": {{
+        "title": "string",
+        "source": "string",
+        "country": "string",
+        "type": "grant|consultancy|other",
+        "deadline": "YYYY-MM-DD or null",
+        "estimated_budget": "string|null",
+        "link": "string"
+      }}
+    }},
     "confidence_score": 0.95
   }}
 ]
@@ -239,18 +257,19 @@ Return ONLY a JSON array in this exact format:
 VALIDATION CHECKLIST:
 ====================
 Before including any tender, verify:
-✓ Title or description contains at least one specified keyword
-✓ Keyword match is case-insensitive but exact
+✓ Step 1 has five boolean criteria
+✓ yes_count correctly reflects Step 1
+✓ passes_filter = (yes_count >= 3)
 ✓ All text is translated to English
-✓ Category is ONLY 'esg' or 'credit_rating' (never 'both')
-✓ Category reflects the keyword type with more matches
-✓ Matched keywords list shows which keywords were found
+✓ Category is "screening_opportunities"
+✓ Step 2 tags are informative only (non-blocking)
+✓ Step 3 capture is present for passed opportunities
 
 IMPORTANT:
-- Return EMPTY ARRAY [] if no tenders contain the specified keywords
-- Do NOT extract tenders about construction, IT, general services unless they mention ESG/credit keywords
-- Be STRICT - only extract tenders that actually relate to ESG or credit rating topics
-- NO 'both' category allowed - choose esg OR credit_rating based on keyword count"""
+- Return EMPTY ARRAY [] if no opportunities pass Step 1
+- Focus on opportunities related to economic development, target sectors, and eligible contexts
+- Step 2 must never eliminate opportunities
+- Do not output any text outside JSON"""
     
     def _double_check_keyword_matching(self, tenders: List[Dict[str, Any]], 
                                      esg_keywords: List[str], 

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Plus, Tag, Trash2, Filter } from 'lucide-react';
-import { Keyword, CategoryType } from '../types';
+import { Keyword } from '../types';
 import { apiService } from '../services/api';
 
 interface KeywordManagerProps {
@@ -10,14 +10,14 @@ interface KeywordManagerProps {
 
 export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefresh }) => {
   const [showAddForm, setShowAddForm] = useState(false);
-  const [newKeyword, setNewKeyword] = useState({ keyword: '', category: 'esg' as 'esg' | 'credit_rating' });
-  const [filterCategory, setFilterCategory] = useState<CategoryType>('all');
+  const [newKeyword, setNewKeyword] = useState({ keyword: '', category: 'sector' });
+  const [filterCategory, setFilterCategory] = useState<string>('all');
 
   const handleAddKeyword = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       await apiService.createKeyword(newKeyword);
-      setNewKeyword({ keyword: '', category: 'esg' });
+      setNewKeyword({ keyword: '', category: 'sector' });
       setShowAddForm(false);
       onRefresh();
     } catch (error) {
@@ -36,9 +36,7 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
     }
   };
 
-  const filteredKeywords = keywords.filter(keyword => 
-    filterCategory === 'all' || keyword.category === filterCategory
-  );
+  const filteredKeywords = keywords.filter(keyword => filterCategory === 'all' || keyword.category === filterCategory);
 
   const getCategoryColor = (category: string) => {
     return category === 'esg' 
@@ -54,8 +52,8 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
     });
   };
 
-  const esgKeywords = keywords.filter(k => k.category === 'esg');
-  const creditKeywords = keywords.filter(k => k.category === 'credit_rating');
+  const categoryAKeywords = keywords.filter(k => k.category === 'sector');
+  const categoryBKeywords = keywords.filter(k => k.category === 'activity_fit');
 
   return (
     <div className="space-y-6">
@@ -76,8 +74,8 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">ESG Keywords</p>
-              <p className="text-2xl font-bold text-green-600 mt-1">{esgKeywords.length}</p>
+              <p className="text-sm font-medium text-gray-600">Sector Keywords</p>
+              <p className="text-2xl font-bold text-green-600 mt-1">{categoryAKeywords.length}</p>
             </div>
             <div className="p-3 rounded-full bg-green-500">
               <Tag className="h-6 w-6 text-white" />
@@ -87,8 +85,8 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600">Credit Rating Keywords</p>
-              <p className="text-2xl font-bold text-purple-600 mt-1">{creditKeywords.length}</p>
+              <p className="text-sm font-medium text-gray-600">Activity Fit Keywords</p>
+              <p className="text-2xl font-bold text-purple-600 mt-1">{categoryBKeywords.length}</p>
             </div>
             <div className="p-3 rounded-full bg-purple-500">
               <Tag className="h-6 w-6 text-white" />
@@ -121,11 +119,13 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
               </label>
               <select
                 value={newKeyword.category}
-                onChange={(e) => setNewKeyword({ ...newKeyword, category: e.target.value as 'esg' | 'credit_rating' })}
+                    onChange={(e) => setNewKeyword({ ...newKeyword, category: e.target.value })}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
-                <option value="esg">ESG</option>
-                <option value="credit_rating">Credit Rating</option>
+                <option value="sector">Sector</option>
+                <option value="activity_fit">Activity Fit</option>
+                <option value="geography">Geography</option>
+                <option value="source_tag">Source Tag</option>
               </select>
             </div>
             <div className="flex gap-3">
@@ -139,7 +139,7 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
                 type="button"
                 onClick={() => {
                   setShowAddForm(false);
-                  setNewKeyword({ keyword: '', category: 'esg' });
+                  setNewKeyword({ keyword: '', category: 'sector' });
                 }}
                 className="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors"
               >
@@ -156,12 +156,14 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
           <Filter className="h-4 w-4 text-gray-400" />
           <select
             value={filterCategory}
-            onChange={(e) => setFilterCategory(e.target.value as CategoryType)}
+            onChange={(e) => setFilterCategory(e.target.value)}
             className="px-3 py-1 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           >
             <option value="all">All Categories</option>
-            <option value="esg">ESG</option>
-            <option value="credit_rating">Credit Rating</option>
+            <option value="sector">Sector</option>
+            <option value="activity_fit">Activity Fit</option>
+            <option value="geography">Geography</option>
+            <option value="source_tag">Source Tag</option>
           </select>
         </div>
       </div>
@@ -180,7 +182,7 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
               <div key={keyword.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
                 <div className="flex items-center justify-between mb-2">
                   <span className={`px-2 py-1 rounded-full text-xs font-medium ${getCategoryColor(keyword.category)}`}>
-                    {keyword.category === 'esg' ? 'ESG' : 'Credit Rating'}
+                    {keyword.category}
                   </span>
                   <button
                     onClick={() => handleDeleteKeyword(keyword.id)}

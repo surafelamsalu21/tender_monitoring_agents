@@ -60,29 +60,27 @@ class TenderAgent:
             # Log page content length only (avoid Unicode issues)
             logger.info(f"Total page content length: {len(state['page_content'])} characters")
             
-            system_prompt = """You are a tender extraction specialist. Your task is to:
-1. Extract ONLY procurement/tender opportunities that contain the specified ESG or Credit Rating keywords
-2. Be STRICT - only extract tenders that actually mention the provided keywords
-3. ALWAYS respond in ENGLISH, even if the source content is in another language
-4. DO NOT extract general tenders that don't contain the specified keywords
+            system_prompt = """You are an opportunity screening specialist.
+Purpose: identify and shortlist relevant opportunities for further review.
 
-IMPORTANT FILTERING RULES:
-- ONLY extract tenders that contain at least one ESG keyword OR one Credit Rating keyword
-- ESG keywords: environmental, sustainability, green, carbon, climate, renewable, social responsibility, governance, ESG
-- Credit Rating keywords: credit, rating, financial, risk, assessment, audit, creditworthiness
-- If a tender doesn't contain any of these keywords, DO NOT include it
-- Be case-insensitive when matching keywords
+Apply this Screening Checklist:
+Step 1: Quick Relevance Filter (Yes/No)
+- mission_alignment
+- sector_relevance
+- activity_fit
+- geographic_fit
+- eligibility_quick_check
+Keep opportunity ONLY if yes_count >= 3.
 
-Extract information with:
-- Title/name (TRANSLATE TO ENGLISH)
-- URL/link (use page URL if no specific link found)
-- Date (extract any date you find, even if not directly related)
-- Brief description (TRANSLATE TO ENGLISH)
+Step 2: Quick Flags (non-blocking tags only)
+- opportunity_characteristics
+- strategic_signals
+- potential_concerns
 
-Categorize each tender as:
-- 'esg' if it mentions: environmental, sustainability, green, carbon, climate, renewable, social responsibility, governance, ESG
-- 'credit_rating' if it mentions: credit, rating, financial, risk, assessment, audit, creditworthiness
-- 'both' if it contains both types of keywords
+Step 3: Basic Information Capture
+- title, source, country, type, deadline, estimated_budget, link
+
+Always respond in ENGLISH.
 
 Return ONLY a valid JSON array:
 [
@@ -90,24 +88,49 @@ Return ONLY a valid JSON array:
     "title": "tender title (IN ENGLISH)",
     "url": "full URL or page URL",
     "date": "YYYY-MM-DD or null",
-    "category": "esg|credit_rating|both",
+    "category": "screening_opportunities",
     "description": "brief description (IN ENGLISH)",
-    "matched_keywords": ["keyword1", "keyword2"]
+    "matched_keywords": ["optional_signal_or_keyword"],
+    "screening": {
+      "step1": {
+        "mission_alignment": true,
+        "sector_relevance": true,
+        "activity_fit": true,
+        "geographic_fit": true,
+        "eligibility_quick_check": true
+      },
+      "yes_count": 0,
+      "passes_filter": true,
+      "step2": {
+        "opportunity_characteristics": [],
+        "strategic_signals": [],
+        "potential_concerns": []
+      },
+      "step3": {
+        "title": "",
+        "source": "",
+        "country": "",
+        "type": "grant|consultancy|other",
+        "deadline": "YYYY-MM-DD or null",
+        "estimated_budget": "string|null",
+        "link": ""
+      }
+    }
   }
 ]
 
-CRITICAL: Only include tenders that contain the specified keywords. If no tenders match the keywords, return an empty array [].
+CRITICAL: Only include opportunities that pass Step 1 with yes_count >= 3. If none pass, return [].
 IMPORTANT: Your response must be ONLY valid JSON, no additional text. ALL TEXT FIELDS MUST BE IN ENGLISH."""
 
             user_prompt = f"""
 Page URL: {state['page_url']}
-ESG Keywords: {', '.join(state['keywords_esg'])}
-Credit Rating Keywords: {', '.join(state['keywords_credit'])}
+Signal Keywords A (optional hints): {', '.join(state['keywords_esg'])}
+Signal Keywords B (optional hints): {', '.join(state['keywords_credit'])}
 
-Page Content (look for procurement opportunities that contain the specified keywords):
+Page Content:
 {state['page_content']}
 
-Extract ONLY tenders that contain at least one ESG keyword OR one Credit Rating keyword. Be strict and only include tenders that actually mention the provided keywords. Return ONLY valid JSON."""
+Apply the full 3-step Screening Checklist. Keep only opportunities with yes_count >= 3. Return ONLY valid JSON."""
 
             messages = [
                 SystemMessage(content=system_prompt),
@@ -207,10 +230,11 @@ Extract ONLY tenders that contain at least one ESG keyword OR one Credit Rating 
                         
                         if result['status'] == 'success':
                             # Generate detailed description using AI
-                            system_prompt = """You are a tender detail extraction specialist. Your task is to:
+                            system_prompt = """You are an opportunity detail extraction specialist. Your task is to:
 1. Extract comprehensive details from tender pages
 2. Provide all information in ENGLISH, regardless of source language
 3. Be thorough and accurate
+4. Preserve screening context and highlight details supporting checklist-based review
 
 Extract the following information:
 - Full tender title (TRANSLATE TO ENGLISH)

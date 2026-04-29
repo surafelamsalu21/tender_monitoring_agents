@@ -97,8 +97,10 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
     }
 
     // Apply category filter
-    if (selectedCategory !== 'all') {
-      filtered = filtered.filter(tender => tender.category === selectedCategory);
+    if (selectedCategory === 'passed') {
+      filtered = filtered.filter(tender => tender.passes_screening === true);
+    } else if (selectedCategory === 'failed') {
+      filtered = filtered.filter(tender => tender.passes_screening === false);
     }
 
     // Apply sorting
@@ -155,17 +157,10 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
     }
   };
 
-  const getCategoryColor = (category: string) => {
-    switch (category) {
-      case 'esg':
-        return 'bg-emerald-100 text-emerald-800 border-emerald-200';
-      case 'credit_rating':
-        return 'bg-purple-100 text-purple-800 border-purple-200';
-      case 'both':
-        return 'bg-blue-100 text-blue-800 border-blue-200';
-      default:
-        return 'bg-gray-100 text-gray-800 border-gray-200';
-    }
+  const getCategoryColor = (passesScreening?: boolean) => {
+    if (passesScreening === true) return 'bg-emerald-100 text-emerald-800 border-emerald-200';
+    if (passesScreening === false) return 'bg-red-100 text-red-800 border-red-200';
+    return 'bg-gray-100 text-gray-800 border-gray-200';
   };
 
   const getUrgencyDisplay = (tender: Tender) => {
@@ -316,8 +311,8 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                     className="pl-10 pr-8 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none bg-white min-w-[140px]"
                   >
                     <option value="all">All Categories</option>
-                    <option value="esg">ESG</option>
-                    <option value="credit_rating">Credit Rating</option>
+                    <option value="passed">Passed</option>
+                    <option value="failed">Failed</option>
                   </select>
                 </div>
                 
@@ -376,9 +371,9 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                           {tender.title}
                         </h3>
                         <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className={`px-3 py-1 rounded-full text-xs font-medium border ${getCategoryColor(tender.category)}`}>
+                          <span className={`px-3 py-1 rounded-full text-xs font-medium border ${getCategoryColor(tender.passes_screening)}`}>
                             <Tag className="h-3 w-3 inline mr-1" />
-                            {tender.category === 'esg' ? 'ESG' : tender.category === 'credit_rating' ? 'Credit Rating' : 'Both'}
+                            {tender.passes_screening ? 'Passed' : 'Failed'}
                           </span>
                         </div>
                       </div>
@@ -503,9 +498,9 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                     </h3>
                     {selectedTender && (
                       <div className="flex items-center gap-3 mt-2 flex-wrap">
-                        <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getCategoryColor(selectedTender.category)}`}>
+                        <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getCategoryColor(selectedTender.passes_screening)}`}>
                           <Tag className="h-4 w-4 inline mr-1" />
-                          {selectedTender.category === 'esg' ? 'ESG' : selectedTender.category === 'credit_rating' ? 'Credit Rating' : 'Both'}
+                          {selectedTender.passes_screening ? 'Passed screening' : 'Did not pass'}
                         </span>
                         {detailedTender?.detailed_info?.deadline && (
                           <span className="flex items-center text-sm text-gray-600">
@@ -606,49 +601,50 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                     )}
 
                     {/* Contact Information */}
-                    {detailedTender.detailed_info?.contact_info && (
-                      <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                        <h4 className="text-lg font-semibold text-blue-900 mb-3 flex items-center">
-                          <User className="h-5 w-5 mr-2" />
-                          Contact Information
-                        </h4>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          {(() => {
-                            const contactInfo = parseContactInfo(detailedTender.detailed_info?.contact_info);
-                            return (
-                              <>
-                                {contactInfo.contact_person && (
-                                  <div className="flex items-center">
-                                    <User className="h-4 w-4 text-blue-600 mr-2 flex-shrink-0" />
-                                    <span className="text-blue-800 text-sm">{contactInfo.contact_person}</span>
-                                  </div>
+                    <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                      <h4 className="text-lg font-semibold text-blue-900 mb-3 flex items-center">
+                        <User className="h-5 w-5 mr-2" />
+                        Contact Information
+                      </h4>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {(() => {
+                          const contactInfo = parseContactInfo(detailedTender.detailed_info?.contact_info);
+                          const contactPerson = contactInfo.contact_person || 'Unknown';
+                          const contactEmail = contactInfo.email || 'Unknown';
+
+                          return (
+                            <>
+                              <div className="flex items-center">
+                                <User className="h-4 w-4 text-blue-600 mr-2 flex-shrink-0" />
+                                <span className="text-blue-800 text-sm">{contactPerson}</span>
+                              </div>
+                              <div className="flex items-center col-span-1 md:col-span-2">
+                                <Mail className="h-4 w-4 text-blue-600 mr-2 flex-shrink-0" />
+                                {contactInfo.email ? (
+                                  <a href={`mailto:${contactInfo.email}`} className="text-blue-600 hover:underline text-sm">
+                                    {contactInfo.email}
+                                  </a>
+                                ) : (
+                                  <span className="text-blue-800 text-sm">{contactEmail}</span>
                                 )}
-                                {contactInfo.phone && (
-                                  <div className="flex items-center">
-                                    <Phone className="h-4 w-4 text-blue-600 mr-2 flex-shrink-0" />
-                                    <span className="text-blue-800 text-sm">{contactInfo.phone}</span>
-                                  </div>
-                                )}
-                                {contactInfo.email && (
-                                  <div className="flex items-center col-span-2">
-                                    <Mail className="h-4 w-4 text-blue-600 mr-2 flex-shrink-0" />
-                                    <a href={`mailto:${contactInfo.email}`} className="text-blue-600 hover:underline text-sm">
-                                      {contactInfo.email}
-                                    </a>
-                                  </div>
-                                )}
-                                {contactInfo.address && (
-                                  <div className="flex items-start col-span-2">
-                                    <MapPin className="h-4 w-4 text-blue-600 mr-2 mt-0.5 flex-shrink-0" />
-                                    <span className="text-blue-800 text-sm">{contactInfo.address}</span>
-                                  </div>
-                                )}
-                              </>
-                            );
-                          })()}
-                        </div>
+                              </div>
+                              {contactInfo.phone && (
+                                <div className="flex items-center">
+                                  <Phone className="h-4 w-4 text-blue-600 mr-2 flex-shrink-0" />
+                                  <span className="text-blue-800 text-sm">{contactInfo.phone}</span>
+                                </div>
+                              )}
+                              {contactInfo.address && (
+                                <div className="flex items-start col-span-1 md:col-span-2">
+                                  <MapPin className="h-4 w-4 text-blue-600 mr-2 mt-0.5 flex-shrink-0" />
+                                  <span className="text-blue-800 text-sm">{contactInfo.address}</span>
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
-                    )}
+                    </div>
 
                     {/* Additional Details */}
                     {detailedTender.detailed_info?.additional_details && (

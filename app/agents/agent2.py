@@ -153,7 +153,11 @@ BASIC TENDER INFORMATION (from Agent 1):
 =======================================
 Title: {basic_tender.get('title', 'N/A')}
 URL: {basic_tender.get('url', 'N/A')}
-Category: {basic_tender.get('category', 'N/A')}
+Screening Category: {basic_tender.get('category', 'screening_opportunities')}
+Step 1 Yes Count: {basic_tender.get('screening', {}).get('yes_count', 'N/A')}
+Passes Step 1 Filter: {basic_tender.get('screening', {}).get('passes_filter', 'N/A')}
+Source: {basic_tender.get('screening', {}).get('step3', {}).get('source', 'N/A')}
+Opportunity Type: {basic_tender.get('screening', {}).get('step3', {}).get('type', 'N/A')}
 Publication Date: {basic_tender.get('publication_date', 'N/A')}
 Deadline: {basic_tender.get('deadline', 'N/A')}
 Date Status: {basic_tender.get('date_status', 'unknown')}
@@ -199,7 +203,9 @@ Return ONLY the JSON object with no additional text.
         with special requirements about extracting and validating all dates, translating to English, and structuring the response as required JSON.
         Provides clear requirements and date handling logic.
         """
-        return f"""You are a professional tender analysis specialist. Extract comprehensive details with special focus on DATE VALIDATION.
+        return f"""You are a professional opportunity analysis specialist.
+This is Phase 2 after checklist screening has already shortlisted opportunities.
+Extract comprehensive details with special focus on DATE VALIDATION.
 
 CRITICAL DATE REQUIREMENTS:
 ============================

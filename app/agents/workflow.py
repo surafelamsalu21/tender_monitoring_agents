@@ -7,7 +7,7 @@ from typing import Dict, List, Any, TypedDict
 from langgraph.graph import StateGraph, END, START
 from datetime import datetime
 
-from .agent1 import TenderExtractionAgent
+from .screening_agent import ScreeningExtractionAgent
 from .agent2 import TenderDetailAgent
 from .agent3 import EmailComposerAgent
 
@@ -18,8 +18,7 @@ class WorkflowState(TypedDict):
     page_content: str                         # Raw content of the target web page
     page_url: str                             # URL of the scraped page
     page_id: int                              # Unique page identifier for DB-relation and dedupe
-    esg_keywords: List[str]                   # Keywords for ESG tenders (Agent 1 relevance filtering)
-    credit_keywords: List[str]                # Keywords for Credit Rating tenders (Agent 1 filtering)
+    screening_config: Dict[str, Any]          # Screening checklist configuration
     tender_repo: Any                          # Data repository, must offer DB ops methods
     db: Any                                   # Database session/connection/context
 
@@ -56,7 +55,7 @@ class TenderAgent:
     
     def __init__(self):
         # Instantiate each agent for workflow steps: extraction, enrichment, email composition
-        self.agent1 = TenderExtractionAgent()
+        self.agent1 = ScreeningExtractionAgent()
         self.agent2 = TenderDetailAgent()
         self.agent3 = EmailComposerAgent()
         # Build the core workflow DAG using StateGraph abstraction
@@ -99,6 +98,23 @@ class TenderAgent:
         workflow.add_edge("agent3_compose", END)
         
         return workflow.compile()
+
+    def _tender_identity_key(self, tender: Dict[str, Any]) -> str:
+        """
+        Build a lightweight in-memory identity key for matching tenders across workflow steps.
+        Prefer opportunity fingerprint, fallback to URL+title.
+        """
+        screening = tender.get("screening", {}) or {}
+        step3 = screening.get("step3", {}) or {}
+        base = (
+            tender.get("opportunity_fingerprint")
+            or f"{tender.get('title', '').strip().lower()}|"
+               f"{(step3.get('deadline') or tender.get('date') or '').strip()}|"
+               f"{(step3.get('source') or '').strip().lower()}|"
+               f"{(step3.get('type') or '').strip().lower()}|"
+               f"{(step3.get('country') or '').strip().lower()}"
+        )
+        return base
     
     async def _agent1_extract_node(self, state: WorkflowState) -> WorkflowState:
         """Enhanced Agent 1: Extract all tenders and optionally apply date filtering
@@ -110,21 +126,17 @@ class TenderAgent:
             logger.info("Agent 1: Starting enhanced tender extraction")
             logger.info(f"Date filtering: {'ENABLED' if state.get('enable_date_filtering', True) else 'DISABLED'}")
 
-            # Extract all tenders (unfiltered): for auditing or extra analytics
-            all_tenders = await self.agent1.extract_and_categorize_tenders(
+            # Extract all opportunities (unfiltered): for auditing/analytics.
+            all_tenders = await self.agent1.extract_and_screen_opportunities(
                 page_content=state['page_content'],
-                esg_keywords=state['esg_keywords'],
-                credit_keywords=state['credit_keywords'],
-                include_all_tenders=True
+                include_all_opportunities=True,
             )
 
             # Optionally apply date filtering (main path for production use)
             if state.get('enable_date_filtering', True):
-                filtered_tenders = await self.agent1.extract_and_categorize_tenders(
+                filtered_tenders = await self.agent1.extract_and_screen_opportunities(
                     page_content=state['page_content'],
-                    esg_keywords=state['esg_keywords'],
-                    credit_keywords=state['credit_keywords'],
-                    include_all_tenders=False   # Only recent/valid tenders
+                    include_all_opportunities=False,  # only pass-screening opportunities
                 )
             else:
                 filtered_tenders = all_tenders  # No filtering: all go downstream
@@ -188,7 +200,15 @@ class TenderAgent:
                     continue
 
                 is_duplicate = state['tender_repo'].check_duplicate_tender(
-                    state['db'], title, url, state['page_id']
+                    state['db'],
+                    title,
+                    url,
+                    state['page_id'],
+                    screening_result=tender.get("screening", {}),
+                    tender_date=(
+                        tender.get("screening", {}).get("step3", {}).get("deadline")
+                        or tender.get("date")
+                    ),
                 )
 
                 if is_duplicate:
@@ -203,10 +223,10 @@ class TenderAgent:
             state['duplicates_checked'] = True
 
             # Agent 2 also only processes non-duplicate tenders
+            filtered_keys = {self._tender_identity_key(t) for t in filtered_tenders}
             agent2_filtered = []
             for tender in state['tenders_for_agent2']:
-                url = tender.get('url', '')
-                if any(t.get('url') == url for t in filtered_tenders):
+                if self._tender_identity_key(tender) in filtered_keys:
                     agent2_filtered.append(tender)
             state['tenders_for_agent2'] = agent2_filtered
 
@@ -251,9 +271,15 @@ class TenderAgent:
                     page_id=state['page_id'],
                     title=tender_data['title'],
                     url=tender_data['url'],
-                    tender_date=tender_data.get('deadline') or tender_data.get('date'),
-                    category=tender_data['category'],
-                    description=tender_data.get('description', '')
+                    tender_date=(
+                        tender_data.get('screening', {})
+                        .get('step3', {})
+                        .get('deadline')
+                        or tender_data.get('deadline')
+                        or tender_data.get('date')
+                    ),
+                    description=tender_data.get('description', ''),
+                    screening_result=tender_data.get('screening', {}),
                 )
 
                 if tender:
@@ -391,21 +417,15 @@ class TenderAgent:
 
             email_compositions = []
 
-            # Split between ESG and credit-related tenders for different teams
-            esg_tenders = [t for t in completed_tenders if t.get('category') in ['esg', 'both']]
-            credit_tenders = [t for t in completed_tenders if t.get('category') in ['credit_rating', 'both']]
-
-            # Generate email for ESG team
-            if esg_tenders:
-                logger.info(f"Agent 3: Composing emails for {len(esg_tenders)} ESG tenders")
-                esg_emails = await self.agent3.compose_multiple_emails(esg_tenders, "esg")
-                email_compositions.extend(esg_emails)
-
-            # Generate email for Credit team
-            if credit_tenders:
-                logger.info(f"Agent 3: Composing emails for {len(credit_tenders)} Credit Rating tenders")
-                credit_emails = await self.agent3.compose_multiple_emails(credit_tenders, "credit_rating")
-                email_compositions.extend(credit_emails)
+            logger.info(
+                "Agent 3: Composing screening digest for %s passed opportunities",
+                len(completed_tenders),
+            )
+            screening_emails = await self.agent3.compose_multiple_emails(
+                completed_tenders,
+                "screening_opportunities",
+            )
+            email_compositions.extend(screening_emails)
 
             state['email_compositions'] = email_compositions
             state['agent3_completed'] = True
@@ -422,19 +442,23 @@ class TenderAgent:
             state['error'] = str(e)
             return state
 
-    async def process_page(self, page_content: str, page_url: str, page_id: int, 
-                          esg_keywords: List[str], credit_keywords: List[str],
-                          tender_repo=None, db=None, 
-                          enable_date_filtering: bool = True,
-                          include_all_for_db1: bool = False) -> Dict[str, Any]:
+    async def process_page(
+        self,
+        page_content: str,
+        page_url: str,
+        page_id: int,
+        tender_repo=None,
+        db=None,
+        enable_date_filtering: bool = True,
+        include_all_for_db1: bool = False,
+        screening_config: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
         """Entry-point: orchestrates the entire tender processing workflow.
 
         Args:
             page_content:         Content of the scraped webpage
             page_url:             The web page's URL
             page_id:              Unique identifier for logging/dedupe
-            esg_keywords:         ESG team keywords for screening
-            credit_keywords:      Credit Rating team keywords
             tender_repo:          Repo for database ops (must have dedupe/save methods)
             db:                   Database session or object
             enable_date_filtering: Only process new & relevant tenders if True
@@ -453,8 +477,7 @@ class TenderAgent:
             'page_content': page_content,
             'page_url': page_url,
             'page_id': page_id,
-            'esg_keywords': esg_keywords,
-            'credit_keywords': credit_keywords,
+            'screening_config': screening_config or {},
             'tender_repo': tender_repo,
             'db': db,
 

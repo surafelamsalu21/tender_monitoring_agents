@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # Ollama
     OLLAMA_BASE_URL: str = Field(default="http://localhost:11434", env="OLLAMA_BASE_URL")
-    OLLAMA_MODEL: str = Field(default="qwen2.5:7b", env="OLLAMA_MODEL")
+    OLLAMA_MODEL: str = Field(default="qwen2.5:3b", env="OLLAMA_MODEL")
     
     # Email Configuration
     SMTP_HOST: str = Field(default="smtp.gmail.com", env="SMTP_HOST")

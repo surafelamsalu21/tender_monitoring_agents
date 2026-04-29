@@ -2,10 +2,12 @@
 Enhanced Tender Repository with Keyword Tracking
 """
 import json
+import hashlib
+import re
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, text
+from sqlalchemy import and_, text
 import logging
 
 logger = logging.getLogger(__name__)
@@ -15,15 +17,56 @@ from app.models.keyword import Keyword
 
 class TenderRepository:
     """Enhanced repository for tender database operations with keyword tracking"""
+
+    @staticmethod
+    def _normalize_text(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        cleaned = re.sub(r"\s+", " ", str(value)).strip().lower()
+        return cleaned
+
+    def build_opportunity_fingerprint(
+        self,
+        page_id: int,
+        title: str,
+        screening_result: Optional[Dict[str, Any]] = None,
+        tender_date: Optional[str] = None,
+    ) -> str:
+        """
+        Build a stable fingerprint for opportunity-level dedupe.
+        Same source page can contain many opportunities; dedupe by identity fields,
+        not by page URL.
+        """
+        step3 = (screening_result or {}).get("step3", {}) or {}
+        parts = [
+            f"page:{page_id}",
+            f"title:{self._normalize_text(title)}",
+            f"deadline:{self._normalize_text(step3.get('deadline') or tender_date)}",
+            f"source:{self._normalize_text(step3.get('source'))}",
+            f"type:{self._normalize_text(step3.get('type'))}",
+            f"country:{self._normalize_text(step3.get('country'))}",
+        ]
+        payload = "|".join(parts)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
     
-    def save_tender(self, db: Session, page_id: int, title: str, url: str, 
-                   tender_date: Optional[str], category: str, description: str,
-                   matched_keywords: List[str] = None, keyword_count: int = 0) -> Optional[Tender]:
+    def save_tender(
+        self,
+        db: Session,
+        page_id: int,
+        title: str,
+        url: str,
+        tender_date: Optional[str],
+        description: str,
+        screening_result: Optional[Dict[str, Any]] = None,
+        matched_keywords: Optional[List[str]] = None,
+        keyword_count: int = 0,
+        category: Optional[str] = None,
+    ) -> Optional[Tender]:
         """
         Save a tender with keyword tracking.
 
         - Parses the input tender_date with robust format fallback.
-        - Avoids duplicate tenders by checking by URL.
+        - Avoids duplicate tenders by checking an opportunity fingerprint.
         - Serializes matched keywords to JSON for storage.
         - Associates tender with matching keywords (for reporting/statistics).
         - Commits changes safely and handles rollback on exceptions.
@@ -42,22 +85,47 @@ class TenderRepository:
                         except ValueError:
                             continue
             
-            # Avoid saving duplicate tenders (by URL).
-            existing = db.query(Tender).filter(Tender.url == url).first()
+            fingerprint = self.build_opportunity_fingerprint(
+                page_id=page_id,
+                title=title,
+                screening_result=screening_result,
+                tender_date=tender_date,
+            )
+
+            # Avoid saving duplicate tenders (opportunity identity).
+            existing = db.query(Tender).filter(Tender.opportunity_fingerprint == fingerprint).first()
             if existing:
                 logger.info(f"Tender already exists: {title[:50]}...")
                 return existing
             
+            step1 = screening_result.get("step1", {}) if screening_result else {}
+            step2 = screening_result.get("step2", {}) if screening_result else {}
+            step3 = screening_result.get("step3", {}) if screening_result else {}
+            yes_count = int(screening_result.get("yes_count", 0)) if screening_result else 0
+            passes_screening = bool(screening_result.get("passes_filter", False)) if screening_result else False
+            screening_version = screening_result.get("screening_version", "v1_checklist") if screening_result else "legacy"
+
             # Create the new Tender object.
             tender = Tender(
                 title=title,
                 url=url,
+                opportunity_fingerprint=fingerprint,
                 tender_date=parsed_date,
-                category=category,
+                category=category or "legacy",
                 description=description,
                 page_id=page_id,
-                matched_keywords_json=json.dumps(matched_keywords or []),
-                keyword_count=keyword_count
+                matched_keywords_json=matched_keywords or [],
+                keyword_count=keyword_count,
+                source=step3.get("source"),
+                country=step3.get("country"),
+                opportunity_type=step3.get("type"),
+                estimated_budget=step3.get("estimated_budget"),
+                screening_version=screening_version,
+                screening_yes_count=yes_count,
+                passes_screening=passes_screening,
+                screening_step1=step1,
+                screening_step2=step2,
+                screening_step3=step3,
             )
             
             db.add(tender)
@@ -160,6 +228,25 @@ class TenderRepository:
                 date_validation_str = json.dumps(date_validation)
             else:
                 date_validation_str = None
+
+            tender_value = (
+                str(detailed_info.get('tender_value')).strip()
+                if detailed_info.get('tender_value')
+                else None
+            )
+            duration = (
+                str(detailed_info.get('duration')).strip()
+                if detailed_info.get('duration')
+                else None
+            )
+            if not tender_value or not duration:
+                inferred_value, inferred_duration = self._infer_value_and_duration_from_text(
+                    detailed_description=detailed_description,
+                    additional_details=str(detailed_info.get('additional_details', '')) if detailed_info.get('additional_details') else None,
+                    full_content=str(detailed_info.get('full_content', '')) if detailed_info.get('full_content') else None,
+                )
+                tender_value = tender_value or inferred_value
+                duration = duration or inferred_duration
             
             # Compose the new DetailedTender
             detailed_tender = DetailedTender(
@@ -168,6 +255,8 @@ class TenderRepository:
                 detailed_description=detailed_description,
                 requirements=requirements_str,
                 deadline=deadline,
+                tender_value=tender_value,
+                duration=duration,
                 contact_info=contact_info_str,
                 additional_details=str(detailed_info.get('additional_details', '')) if detailed_info.get('additional_details') else None,
                 full_content=str(detailed_info.get('full_content', '')) if detailed_info.get('full_content') else '',
@@ -229,6 +318,10 @@ class TenderRepository:
                 existing.additional_details = str(detailed_info['additional_details'])
             if detailed_info.get('full_content'):
                 existing.full_content = str(detailed_info['full_content'])
+            if detailed_info.get('tender_value'):
+                existing.tender_value = str(detailed_info['tender_value']).strip()
+            if detailed_info.get('duration'):
+                existing.duration = str(detailed_info['duration']).strip()
             
             # Deadline/date validation
             if detailed_info.get('deadline'):
@@ -236,6 +329,17 @@ class TenderRepository:
             
             if detailed_info.get('date_validation'):
                 existing.date_validation = json.dumps(detailed_info['date_validation'])
+
+            if not existing.tender_value or not existing.duration:
+                inferred_value, inferred_duration = self._infer_value_and_duration_from_text(
+                    detailed_description=existing.detailed_description,
+                    additional_details=existing.additional_details,
+                    full_content=existing.full_content,
+                )
+                if not existing.tender_value and inferred_value:
+                    existing.tender_value = inferred_value
+                if not existing.duration and inferred_duration:
+                    existing.duration = inferred_duration
             
             existing.updated_at = datetime.utcnow()
             existing.processed_at = datetime.utcnow()
@@ -248,6 +352,46 @@ class TenderRepository:
             db.rollback()
             logger.error(f"Error updating detailed tender: {e}")
             raise e
+
+    def _infer_value_and_duration_from_text(
+        self,
+        detailed_description: Optional[str],
+        additional_details: Optional[str],
+        full_content: Optional[str],
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Infer tender value and duration from free text when Agent 2 omits structured fields."""
+        text_blob = " ".join(
+            [
+                str(detailed_description or ""),
+                str(additional_details or ""),
+                str(full_content or ""),
+            ]
+        )
+        text_blob = re.sub(r"\s+", " ", text_blob).strip()
+        if not text_blob:
+            return None, None
+
+        value = None
+        duration = None
+
+        budget_match = re.search(
+            r"(?:budget|value|estimated budget)\s*[:\-]\s*([A-Za-z]{2,5}\s?[\d,]+(?:\.\d+)?)",
+            text_blob,
+            re.IGNORECASE,
+        )
+        if budget_match:
+            value = budget_match.group(1).strip()
+
+        start_match = re.search(r"(?:project start date|start date)\s*[:\-]\s*(\d{4}-\d{2}-\d{2})", text_blob, re.IGNORECASE)
+        end_match = re.search(r"(?:project end date|end date)\s*[:\-]\s*(\d{4}-\d{2}-\d{2})", text_blob, re.IGNORECASE)
+        if start_match and end_match:
+            duration = f"{start_match.group(1)} to {end_match.group(1)}"
+        else:
+            duration_match = re.search(r"(?:duration|timeline)\s*[:\-]\s*([^.;\n]+)", text_blob, re.IGNORECASE)
+            if duration_match:
+                duration = duration_match.group(1).strip()
+
+        return value, duration
     
     def _parse_deadline(self, deadline_value) -> Optional[datetime]:
         """
@@ -277,22 +421,14 @@ class TenderRepository:
             logger.warning(f"Deadline parsing error: {e}")
             return None
     
-    def get_unnotified_tenders(self, db: Session, category: str) -> List[Tender]:
+    def get_unnotified_tenders(self, db: Session, only_passed: bool = True) -> List[Tender]:
         """
-        Returns all non-notified tenders for a given category.
-
-        - If category is 'esg' or 'credit_rating', also returns those marked 'both'.
-        - Otherwise, strictly matches category.
+        Returns all non-notified tenders, defaulting to opportunities
+        that passed checklist screening.
         """
-        query = db.query(Tender).filter(
-            and_(
-                Tender.is_notified == False,
-                or_(
-                    Tender.category == category,
-                    Tender.category == "both" if category in ["esg", "credit_rating"] else False
-                )
-            )
-        )
+        query = db.query(Tender).filter(Tender.is_notified == False)
+        if only_passed:
+            query = query.filter(Tender.passes_screening == True)
         return query.all()
     
     def get_tenders_with_keywords(self, db: Session, keywords: List[str], limit: int = 100) -> List[Tender]:
@@ -307,7 +443,10 @@ class TenderRepository:
         for tender in db.query(Tender).limit(limit * 2).all():
             if tender.matched_keywords_json:
                 try:
-                    tender_keywords = json.loads(tender.matched_keywords_json)
+                    if isinstance(tender.matched_keywords_json, str):
+                        tender_keywords = json.loads(tender.matched_keywords_json)
+                    else:
+                        tender_keywords = tender.matched_keywords_json
                     if any(kw.lower() in [tk.lower() for tk in tender_keywords] for kw in keywords):
                         tenders.append(tender)
                         if len(tenders) >= limit:
@@ -394,30 +533,52 @@ class TenderRepository:
         """
         return db.query(DetailedTender).filter(DetailedTender.tender_id == tender_id).first()
     
-    def check_duplicate_tender(self, db: Session, title: str, url: str, page_id: int) -> bool:
+    def check_duplicate_tender(
+        self,
+        db: Session,
+        title: str,
+        url: str,
+        page_id: int,
+        screening_result: Optional[Dict[str, Any]] = None,
+        tender_date: Optional[str] = None,
+    ) -> bool:
         """
-        Check for duplicates for a given tender (by URL primarily, then by title and page).
+        Check for duplicates for a given opportunity (fingerprint primarily, then title/date fallback).
 
         - Returns True if a duplicate (by URL or by title/page) exists, False otherwise.
         """
-        # Try URL duplicate
-        existing_by_url = db.query(Tender).filter(
-            and_(
-                Tender.url == url,
-                Tender.page_id == page_id
-            )
+        fingerprint = self.build_opportunity_fingerprint(
+            page_id=page_id,
+            title=title,
+            screening_result=screening_result,
+            tender_date=tender_date,
+        )
+
+        existing_by_fingerprint = db.query(Tender).filter(
+            Tender.opportunity_fingerprint == fingerprint
         ).first()
-        
-        if existing_by_url:
+        if existing_by_fingerprint:
             return True
-        
-        # Try exact title duplicate for that page
-        existing_by_title = db.query(Tender).filter(
+
+        # Fallback: exact title + same page + same tender date (if available)
+        normalized_tender_date = None
+        step3 = (screening_result or {}).get("step3", {}) or {}
+        raw_date = step3.get("deadline") or tender_date
+        if raw_date:
+            try:
+                normalized_tender_date = datetime.strptime(str(raw_date), "%Y-%m-%d")
+            except ValueError:
+                normalized_tender_date = None
+
+        query = db.query(Tender).filter(
             and_(
                 Tender.title == title,
-                Tender.page_id == page_id
+                Tender.page_id == page_id,
             )
-        ).first()
+        )
+        if normalized_tender_date:
+            query = query.filter(Tender.tender_date == normalized_tender_date)
+        existing_by_title = query.first()
         
         return existing_by_title is not None
 

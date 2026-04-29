@@ -17,7 +17,11 @@ router = APIRouter()
 async def get_tenders(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    category: Optional[str] = Query(None, regex="^(esg|credit_rating|both)$"),
+    passes_filter: Optional[bool] = Query(None),
+    source: Optional[str] = Query(None),
+    country: Optional[str] = Query(None),
+    opportunity_type: Optional[str] = Query(None),
+    min_yes_count: Optional[int] = Query(None, ge=0, le=5),
     days: Optional[int] = Query(None, ge=1, le=365),
     db: Session = Depends(get_db)
 ):
@@ -31,18 +35,39 @@ async def get_tenders(
         # Get all tenders (simplified query for now)
         tenders = db.query(Tender).offset(skip).limit(limit).all()
     
-    # Filter by category if specified
-    if category:
-        tenders = [t for t in tenders if t.category == category or t.category == "both"]
+    # Apply checklist-based filters
+    if passes_filter is not None:
+        tenders = [t for t in tenders if bool(t.passes_screening) == passes_filter]
+    if source:
+        tenders = [t for t in tenders if t.source and source.lower() in t.source.lower()]
+    if country:
+        tenders = [t for t in tenders if t.country and country.lower() in t.country.lower()]
+    if opportunity_type:
+        tenders = [
+            t for t in tenders
+            if t.opportunity_type and opportunity_type.lower() == t.opportunity_type.lower()
+        ]
+    if min_yes_count is not None:
+        tenders = [t for t in tenders if (t.screening_yes_count or 0) >= min_yes_count]
     
     return [
         {
             "id": tender.id,
             "title": tender.title,
             "url": tender.url,
+            "opportunity_fingerprint": tender.opportunity_fingerprint,
             "tender_date": tender.tender_date.isoformat() if tender.tender_date else None,
-            "category": tender.category,
             "description": tender.description,
+            "source": tender.source,
+            "country": tender.country,
+            "opportunity_type": tender.opportunity_type,
+            "estimated_budget": tender.estimated_budget,
+            "screening_version": tender.screening_version,
+            "screening_yes_count": tender.screening_yes_count,
+            "passes_screening": tender.passes_screening,
+            "screening_step1": tender.screening_step1,
+            "screening_step2": tender.screening_step2,
+            "screening_step3": tender.screening_step3,
             "is_processed": tender.is_processed,
             "is_notified": tender.is_notified,
             "created_at": tender.created_at.isoformat(),
@@ -67,9 +92,19 @@ async def get_tender(tender_id: int, db: Session = Depends(get_db)):
         "id": tender.id,
         "title": tender.title,
         "url": tender.url,
+        "opportunity_fingerprint": tender.opportunity_fingerprint,
         "tender_date": tender.tender_date.isoformat() if tender.tender_date else None,
-        "category": tender.category,
         "description": tender.description,
+        "source": tender.source,
+        "country": tender.country,
+        "opportunity_type": tender.opportunity_type,
+        "estimated_budget": tender.estimated_budget,
+        "screening_version": tender.screening_version,
+        "screening_yes_count": tender.screening_yes_count,
+        "passes_screening": tender.passes_screening,
+        "screening_step1": tender.screening_step1,
+        "screening_step2": tender.screening_step2,
+        "screening_step3": tender.screening_step3,
         "is_processed": tender.is_processed,
         "is_notified": tender.is_notified,
         "created_at": tender.created_at.isoformat(),
@@ -87,6 +122,8 @@ async def get_tender(tender_id: int, db: Session = Depends(get_db)):
             "detailed_description": detailed_tender.detailed_description,
             "requirements": detailed_tender.requirements,
             "deadline": detailed_tender.deadline.isoformat() if detailed_tender.deadline else None,
+            "tender_value": detailed_tender.tender_value,
+            "duration": detailed_tender.duration,
             "contact_info": detailed_tender.contact_info,
             "additional_details": detailed_tender.additional_details,
             "processing_status": detailed_tender.processing_status,
@@ -99,8 +136,8 @@ async def get_tender(tender_id: int, db: Session = Depends(get_db)):
 async def get_tender_stats(db: Session = Depends(get_db)):
     """Get tender statistics"""
     total_tenders = db.query(Tender).count()
-    esg_tenders = db.query(Tender).filter(Tender.category.in_(["esg", "both"])).count()
-    credit_tenders = db.query(Tender).filter(Tender.category.in_(["credit_rating", "both"])).count()
+    passed_screening = db.query(Tender).filter(Tender.passes_screening == True).count()
+    failed_screening = db.query(Tender).filter(Tender.passes_screening == False).count()
     
     # Recent tenders (last 7 days)
     week_ago = datetime.utcnow() - timedelta(days=7)
@@ -111,8 +148,8 @@ async def get_tender_stats(db: Session = Depends(get_db)):
     
     return {
         "total_tenders": total_tenders,
-        "esg_tenders": esg_tenders,
-        "credit_rating_tenders": credit_tenders,
+        "passed_screening": passed_screening,
+        "failed_screening": failed_screening,
         "recent_tenders_7_days": recent_tenders,
         "unnotified_tenders": unnotified,
         "last_updated": datetime.utcnow().isoformat()

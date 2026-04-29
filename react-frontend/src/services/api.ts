@@ -12,8 +12,9 @@ const api = axios.create({
 
 // Add email settings types
 export interface EmailNotificationSettings {
-  esg_emails: string[];
-  credit_rating_emails: string[];
+  opportunity_emails?: string[];
+  esg_emails?: string[];
+  credit_rating_emails?: string[];
   notification_preferences: {
     send_for_new_tenders: boolean;
     send_daily_summary: boolean;
@@ -29,7 +30,7 @@ export interface EmailSettingsResponse {
 
 export interface TestEmailRequest {
   email: string;
-  category: 'esg' | 'credit_rating';
+  category?: 'screening_opportunities';
 }
 
 // NEW: Test Crawler types
@@ -121,7 +122,7 @@ export const apiService = {
     return data as Keyword[];
   },
 
-  createKeyword: async (data: { keyword: string; category: 'esg' | 'credit_rating' }): Promise<Keyword> => {
+  createKeyword: async (data: { keyword: string; category: string }): Promise<Keyword> => {
     const responseData = await apiRequest('/api/v1/keywords/', 'post', data);
     return responseData as Keyword;
   },
@@ -163,6 +164,7 @@ export const apiService = {
         success: true,
         message: 'Using default settings',
         settings: {
+          opportunity_emails: [],
           esg_emails: [],
           credit_rating_emails: [],
           notification_preferences: {
@@ -177,7 +179,16 @@ export const apiService = {
 
   saveEmailSettings: async (settings: EmailNotificationSettings): Promise<EmailSettingsResponse> => {
     try {
-      const data = await apiRequest('/api/v1/system/email-settings', 'post', settings);
+      const mergedOpportunityEmails =
+        settings.opportunity_emails ??
+        Array.from(
+          new Set([...(settings.esg_emails || []), ...(settings.credit_rating_emails || [])])
+        );
+      const payload = {
+        ...settings,
+        opportunity_emails: mergedOpportunityEmails,
+      };
+      const data = await apiRequest('/api/v1/system/email-settings', 'post', payload);
       return data as EmailSettingsResponse;
     } catch (error) {
       console.error('Failed to save email settings:', error);
@@ -203,7 +214,7 @@ export const apiService = {
     }
   },
 
-  addEmailToCategory: async (category: 'esg' | 'credit_rating', email: string): Promise<{ success: boolean; message: string }> => {
+  addEmailToCategory: async (category: string, email: string): Promise<{ success: boolean; message: string }> => {
     try {
       const data = await apiRequest(`/api/v1/system/email-settings/${category}/add`, 'post', { email });
       return data as { success: boolean; message: string };
@@ -216,7 +227,7 @@ export const apiService = {
     }
   },
 
-  removeEmailFromCategory: async (category: 'esg' | 'credit_rating', email: string): Promise<{ success: boolean; message: string }> => {
+  removeEmailFromCategory: async (category: string, email: string): Promise<{ success: boolean; message: string }> => {
     try {
       const response = await api.delete(`/api/v1/system/email-settings/${category}/${encodeURIComponent(email)}`);
       return response.data as { success: boolean; message: string };

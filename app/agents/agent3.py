@@ -25,6 +25,11 @@ class EmailComposerAgent:
     def __init__(self):
         # Initializes the LLM used for composing emails, with low temperature for deterministic output
         self.llm = get_chat_llm(temperature=0.1)
+
+    def _get_team_name(self, team_category: str) -> str:
+        if team_category == "screening_opportunities":
+            return "Opportunities Team"
+        return "Opportunity Review Team"
     
     async def compose_tender_email(self, tender_data: Dict[str, Any], 
                                    detailed_info: Dict[str, Any], 
@@ -34,7 +39,7 @@ class EmailComposerAgent:
         Args:
             tender_data: Basic tender information from Agent 1
             detailed_info: Detailed tender information from Agent 2
-            team_category: Target team category ("esg", "credit_rating", "both")
+            team_category: Target notification stream (e.g., "screening_opportunities")
         Returns:
             Dictionary with comprehensive email content, or None if failed.
         """
@@ -52,7 +57,9 @@ BASIC TENDER INFORMATION:
 ========================
 Title: {tender_data.get('title', 'N/A')}
 URL: {tender_data.get('url', 'N/A')}
-Category: {tender_data.get('category', 'N/A')}
+Screening Category: {tender_data.get('category', 'screening_opportunities')}
+Step 1 Yes Count: {tender_data.get('screening', {}).get('yes_count', 'N/A')}
+Passes Filter: {tender_data.get('screening', {}).get('passes_filter', 'N/A')}
 Date: {tender_data.get('date', 'N/A')}
 Description: {tender_data.get('description', 'N/A')}
 Matched Keywords: {', '.join(tender_data.get('matched_keywords', []))}
@@ -101,9 +108,15 @@ Return ONLY the JSON object with no additional text.
 
     def _build_detailed_email_prompt(self, team_category: str) -> str:
         """Builds a comprehensive prompt for the LLM to compose an email, customized for the team category."""
-        team_name = "ESG Team" if team_category == "esg" else "Credit Rating Team"
+        team_name = self._get_team_name(team_category)
 
         return f"""You are composing a comprehensive, professional email notification for the {team_name}.
+This opportunity has already passed the Screening Checklist shortlist stage.
+
+Screening Checklist context to respect:
+- Step 1: 5 relevance checks, shortlisted when yes_count >= 3
+- Step 2: non-blocking flags (opportunity characteristics, strategic signals, potential concerns)
+- Step 3: baseline capture (title, source, country, type, deadline, estimated budget, link)
 
 REQUIREMENTS:
 =============
@@ -151,6 +164,8 @@ CSS STYLING REQUIREMENTS:
 - Clear visual hierarchy
 - Action buttons with hover effects
 - Professional color scheme (blues, grays, whites)
+- Keep action buttons in a stable horizontal row on desktop
+- Use a dedicated button container so buttons never break section alignment
 
 CONTENT REQUIREMENTS:
 ====================
@@ -161,6 +176,9 @@ CONTENT REQUIREMENTS:
 - Show tender value/budget if available
 - Add clear call-to-action buttons
 - Include all relevant dates and timelines
+- In "Next Steps", place exactly two primary actions side-by-side:
+  1) View Full Details
+  2) Start Proposal Preparation
 
 TONE AND STYLE:
 ===============
@@ -172,7 +190,7 @@ TONE AND STYLE:
 
 HTML STRUCTURE REQUIREMENTS:
 ============================
-- Header section with tender title and category
+- Header section with opportunity title and screening status
 - Executive summary section
 - Detailed tender information section
 - Requirements section with bullet points
@@ -180,6 +198,10 @@ HTML STRUCTURE REQUIREMENTS:
 - Timeline/deadline section with urgency
 - Next steps section with action buttons
 - Footer with system information
+- In Next Steps, render buttons in this pattern:
+  - A container with `display:flex; justify-content:center; gap:12px; flex-wrap:nowrap; align-items:center;`
+  - Buttons with equal height/padding and consistent width behavior
+  - On small screens only, allow vertical stacking using a media query
 
 Use modern HTML/CSS practices and ensure the email looks professional in all email clients."""
     
@@ -270,7 +292,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
         Returns:
             dict with subject, summary, html, etc.
         """
-        team_name = "ESG Team" if team_category == "esg" else "Credit Rating Team"
+        team_name = self._get_team_name(team_category)
         title = tender_data.get('title', 'New Tender Opportunity')
         deadline = detailed_info.get('deadline', 'Not specified')
         contact_info = detailed_info.get('contact_info', {})
@@ -632,7 +654,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
 
         Args:
             tenders_with_details: list of tender dicts (each with 'detailed_info')
-            team_category: "esg" or "credit_rating"
+            team_category: notification stream identifier
 
         Returns:
             Dictionary with composed email fields (subject, priority, summary, html_body, ...)
@@ -640,7 +662,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
         try:
             logger.info(f"Agent 3: Composing multi-tender email for {team_category} team with {len(tenders_with_details)} tenders")
             
-            team_name = "ESG Team" if team_category == "esg" else "Credit Rating Team"
+            team_name = self._get_team_name(team_category)
             subject = f"New {team_category.upper()} Tenders - {len(tenders_with_details)} Opportunities Found"
             html_body = self._create_multi_tender_html(tenders_with_details, team_name, team_category)
             return {
@@ -1028,7 +1050,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
         """
         If rich digest formatting fails, compose a dead-simple HTML email as fallback.
         """
-        team_name = "ESG Team" if team_category == "esg" else "Credit Rating Team"
+        team_name = self._get_team_name(team_category)
         return {
             'subject': f"New {team_category.upper()} Tenders - {len(tenders)} Found",
             'priority': 'Medium',
@@ -1060,7 +1082,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
 
         Args:
             tenders_with_details: list of tenders, each with details inside (they may have 'detailed_info')
-            team_category: "esg" or "credit_rating"
+            team_category: notification stream identifier
 
         Returns:
             List of dicts: each represents an email to be sent, with metadata etc.
