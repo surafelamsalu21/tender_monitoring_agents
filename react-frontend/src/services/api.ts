@@ -10,6 +10,22 @@ const api = axios.create({
   timeout: 30000, // Increased timeout for crawler testing
 });
 
+const AUTH_TOKEN_STORAGE_KEY = 'tender_monitor_auth_token';
+
+export interface AuthUser {
+  id: number;
+  email: string;
+  full_name?: string;
+  role: string;
+  is_active: boolean;
+}
+
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  user: AuthUser;
+}
+
 // Add email settings types
 export interface EmailNotificationSettings {
   opportunity_emails?: string[];
@@ -33,6 +49,67 @@ export interface TestEmailRequest {
   category?: 'screening_opportunities';
 }
 
+export const getAuthToken = (): string | null => {
+  return localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+};
+
+export const setAuthToken = (token: string): void => {
+  localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+};
+
+export const clearAuthToken = (): void => {
+  localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+};
+
+api.interceptors.request.use((config) => {
+  const token = getAuthToken();
+  if (token) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+type RetriableAxiosRequestConfig = Parameters<typeof axios.request>[0] & { _retry?: boolean };
+
+function isAxiosErrorPayload(
+  error: unknown
+): error is {
+  config: RetriableAxiosRequestConfig;
+  response?: { status?: number };
+  isAxiosError: true;
+} {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'isAxiosError' in error &&
+    (error as { isAxiosError?: boolean }).isAxiosError === true
+  );
+}
+
+api.interceptors.response.use(
+  (response) => response,
+  async (error: unknown) => {
+    if (!isAxiosErrorPayload(error) || !error.config) {
+      return Promise.reject(error);
+    }
+    const cfg = error.config as RetriableAxiosRequestConfig;
+    const url = String(cfg.url ?? '');
+    if (
+      error.response?.status === 401 &&
+      !cfg._retry &&
+      !url.includes('/auth/login') &&
+      getAuthToken()
+    ) {
+      cfg._retry = true;
+      cfg.headers = cfg.headers ?? {};
+      cfg.headers.Authorization = `Bearer ${getAuthToken()}`;
+      return api.request(cfg);
+    }
+    return Promise.reject(error);
+  }
+);
+
 // NEW: Test Crawler types
 export interface CrawlTestResult {
   status: 'success' | 'failed' | 'error';
@@ -48,7 +125,12 @@ export interface CrawlTestResult {
   error?: string;
 }
 
-export const apiRequest = async (endpoint: string, method: 'get' | 'post' | 'put' | 'delete' = 'get', data?: any, options: any = {}) => {
+export const apiRequest = async (
+  endpoint: string,
+  method: 'get' | 'post' | 'put' | 'patch' | 'delete' = 'get',
+  data?: any,
+  options: any = {}
+) => {
   try {
     let response;
     if (method === 'get') {
@@ -57,6 +139,8 @@ export const apiRequest = async (endpoint: string, method: 'get' | 'post' | 'put
       response = await api.post(endpoint, data, options);
     } else if (method === 'put') {
       response = await api.put(endpoint, data, options);
+    } else if (method === 'patch') {
+      response = await api.patch(endpoint, data, options);
     } else if (method === 'delete') {
       response = await api.delete(endpoint, options);
     }
@@ -68,6 +152,54 @@ export const apiRequest = async (endpoint: string, method: 'get' | 'post' | 'put
 };
 
 export const apiService = {
+  // Auth
+  login: async (email: string, password: string): Promise<LoginResponse> => {
+    const data = await apiRequest('/api/v1/auth/login', 'post', { email, password });
+    return data as LoginResponse;
+  },
+
+  getCurrentUser: async (): Promise<AuthUser> => {
+    const data = await apiRequest('/api/v1/auth/me');
+    return data as AuthUser;
+  },
+
+  updateProfile: async (payload: { full_name?: string | null }): Promise<AuthUser> => {
+    const data = await apiRequest('/api/v1/auth/me', 'patch', payload);
+    return data as AuthUser;
+  },
+
+  changePassword: async (
+    old_password: string,
+    new_password: string
+  ): Promise<{ success: boolean; message: string }> => {
+    const data = await apiRequest('/api/v1/auth/change-password', 'post', {
+      old_password,
+      new_password,
+    });
+    return data as { success: boolean; message: string };
+  },
+
+  createCompanyUser: async (payload: {
+    email: string;
+    password: string;
+    full_name?: string;
+    role: 'viewer' | 'analyst' | 'admin';
+  }): Promise<AuthUser> => {
+    const data = await apiRequest('/api/v1/admin/users', 'post', payload);
+    return data as AuthUser;
+  },
+
+  adminSetUserPassword: async (
+    email: string,
+    new_password: string
+  ): Promise<{ success: boolean; message: string }> => {
+    const data = await apiRequest('/api/v1/admin/users/set-password', 'post', {
+      email,
+      new_password,
+    });
+    return data as { success: boolean; message: string };
+  },
+
   // System
   checkHealth: async (): Promise<SystemStatus> => {
     const data = await apiRequest('/health');

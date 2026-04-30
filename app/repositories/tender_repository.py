@@ -6,7 +6,7 @@ import hashlib
 import re
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, text
 import logging
 
@@ -519,7 +519,14 @@ class TenderRepository:
         Get tenders added within the last N days, up to a limit.
         """
         cutoff_date = datetime.utcnow() - timedelta(days=days)
-        return db.query(Tender).filter(Tender.created_at >= cutoff_date).order_by(Tender.created_at.desc()).limit(limit).all()
+        return (
+            db.query(Tender)
+            .options(joinedload(Tender.detailed_tender))
+            .filter(Tender.created_at >= cutoff_date)
+            .order_by(Tender.created_at.desc())
+            .limit(limit)
+            .all()
+        )
     
     def get_tender_by_id(self, db: Session, tender_id: int) -> Optional[Tender]:
         """

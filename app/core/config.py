@@ -56,6 +56,20 @@ class Settings(BaseSettings):
     
     # CORS
     ALLOWED_ORIGINS: List[str] = Field(default=["*"], env="ALLOWED_ORIGINS")
+
+    # Authentication / Access Control
+    ALLOWED_COMPANY_EMAIL_DOMAINS: str = Field(
+        default="preciseethiopia.com",
+        env="ALLOWED_COMPANY_EMAIL_DOMAINS"
+    )
+    DEFAULT_ADMIN_EMAIL: str = Field(
+        default="admin@preciseethiopia.com",
+        env="DEFAULT_ADMIN_EMAIL"
+    )
+    DEFAULT_ADMIN_PASSWORD: str = Field(
+        default="ChangeMe123!",
+        env="DEFAULT_ADMIN_PASSWORD"
+    )
     
     # Security
     SECRET_KEY: str = Field(default="your-secret-key-change-in-production", env="SECRET_KEY")

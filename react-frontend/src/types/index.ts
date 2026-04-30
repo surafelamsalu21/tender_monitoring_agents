@@ -126,6 +126,12 @@ export interface SystemStatus {
   message: string;
 }
 
-// UPDATED: Added 'test-crawler' to TabType
-export type TabType = 'dashboard' | 'tenders' | 'pages' | 'keywords' | 'test-crawler' | 'settings';
+export type TabType =
+  | 'dashboard'
+  | 'tenders'
+  | 'pages'
+  | 'keywords'
+  | 'test-crawler'
+  | 'settings'
+  | 'account';
 export type CategoryType = 'all' | 'passed' | 'failed';

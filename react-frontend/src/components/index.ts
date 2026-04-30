@@ -5,3 +5,5 @@ export { PageManager } from './PageManager';
 export { KeywordManager } from './KeywordManager';
 export { TestCrawler } from './TestCrawler';  // NEW EXPORT
 export { Settings } from './Settings';
+export { LoginPage } from './LoginPage';
+export { AccountPage } from './AccountPage';

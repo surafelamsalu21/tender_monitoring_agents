@@ -5,6 +5,7 @@ from .tender import Tender, DetailedTender
 from .keyword import Keyword
 from .crawl_log import CrawlLog
 from .email_settings import EmailNotificationSettings, EmailNotificationLog
+from .user import User
 
 __all__ = [
     'MonitoredPage',
@@ -13,7 +14,8 @@ __all__ = [
     'Keyword',
     'CrawlLog',
     'EmailNotificationSettings',
-    'EmailNotificationLog'
+    'EmailNotificationLog',
+    'User',
 ]
 
 # ------------------------------------------------------------------------------

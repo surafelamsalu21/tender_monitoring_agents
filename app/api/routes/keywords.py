@@ -63,6 +63,23 @@ async def get_keywords(
         for keyword in keywords
     ]
 
+@router.get("/categories/stats")
+async def get_keyword_stats(db: Session = Depends(get_db)):
+    """Get keyword statistics by category (must be declared before /{keyword_id})."""
+    total_count = db.query(Keyword).filter(Keyword.is_active == True).count()
+    inactive_count = db.query(Keyword).filter(Keyword.is_active == False).count()
+    categories = [
+        row[0]
+        for row in db.query(Keyword.category).distinct().all()
+        if row[0] is not None
+    ]
+    
+    return {
+        "total_active": total_count,
+        "total_inactive": inactive_count,
+        "categories": categories,
+    }
+
 @router.get("/{keyword_id}")
 async def get_keyword(keyword_id: int, db: Session = Depends(get_db)):
     """Get a specific keyword"""
@@ -141,20 +158,3 @@ async def delete_keyword(keyword_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Keyword not found")
     
     return {"message": "Keyword deleted successfully"}
-
-@router.get("/categories/stats")
-async def get_keyword_stats(db: Session = Depends(get_db)):
-    """Get keyword statistics by category"""
-    total_count = db.query(Keyword).filter(Keyword.is_active == True).count()
-    inactive_count = db.query(Keyword).filter(Keyword.is_active == False).count()
-    categories = [
-        row[0]
-        for row in db.query(Keyword.category).distinct().all()
-        if row[0] is not None
-    ]
-    
-    return {
-        "total_active": total_count,
-        "total_inactive": inactive_count,
-        "categories": categories,
-    }

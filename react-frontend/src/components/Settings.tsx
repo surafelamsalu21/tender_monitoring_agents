@@ -48,7 +48,7 @@ export const Settings: React.FC = () => {
   const [testingEmail, setTestingEmail] = useState<string | null>(null);
   const [processingEmails, setProcessingEmails] = useState<Set<string>>(new Set());
   const [refreshing, setRefreshing] = useState(false);
-  
+
   useEffect(() => {
     const fetchSystemStatus = async () => {
       try {

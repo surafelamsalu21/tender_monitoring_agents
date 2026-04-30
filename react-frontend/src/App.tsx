@@ -1,12 +1,14 @@
 // App.tsx - Updated to include Test Crawler tab
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   LayoutDashboard, 
   FileText, 
   Globe, 
   Tag, 
   Settings as SettingsIcon,
-  TestTube
+  TestTube,
+  LogOut,
+  User,
 } from 'lucide-react';
 import { useApiData } from './hooks/useApi';
 import { 
@@ -15,11 +17,18 @@ import {
   PageManager, 
   KeywordManager, 
   Settings,
-  TestCrawler 
+  TestCrawler,
+  LoginPage,
+  AccountPage,
 } from './components';
 import { TabType } from './types';
+import { apiService, AuthUser, clearAuthToken, getAuthToken } from './services/api';
 
-function App() {
+const AuthenticatedApp: React.FC<{
+  user: AuthUser;
+  onUserChange: (user: AuthUser) => void;
+  onLogout: () => void;
+}> = ({ user, onUserChange, onLogout }) => {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   
   const {
@@ -46,8 +55,9 @@ function App() {
     { id: 'tenders', name: 'Tenders', icon: FileText },
     { id: 'pages', name: 'Pages', icon: Globe },
     { id: 'keywords', name: 'Keywords', icon: Tag },
-    { id: 'test-crawler', name: 'Test Crawler', icon: TestTube }, // NEW TAB
+    { id: 'test-crawler', name: 'Test Crawler', icon: TestTube },
     { id: 'settings', name: 'Settings', icon: SettingsIcon },
+    { id: 'account', name: 'Account', icon: User },
   ];
 
   const renderContent = () => {
@@ -67,8 +77,10 @@ function App() {
         return <PageManager pages={pages} onRefresh={refreshData} />;
       case 'keywords':
         return <KeywordManager keywords={keywords} onRefresh={refreshData} />;
-      case 'test-crawler': // NEW CASE
+      case 'test-crawler':
         return <TestCrawler onRefresh={refreshData} />;
+      case 'account':
+        return <AccountPage user={user} onUserUpdated={onUserChange} />;
       case 'settings':
         return <Settings />;
       default:
@@ -99,6 +111,20 @@ function App() {
                   AI Agents Active
                 </div>
               )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="text-right hidden sm:block">
+                <p className="text-sm font-medium text-gray-900">{user.full_name || user.email}</p>
+                <p className="text-xs text-gray-500">{user.role}</p>
+              </div>
+              <button
+                onClick={onLogout}
+                className="inline-flex items-center px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                <LogOut className="h-4 w-4 mr-2" />
+                Logout
+              </button>
             </div>
             
             {error && (
@@ -156,9 +182,11 @@ function App() {
         </div>
       </header>
 
-      {/* Main content */}
+      {/* Main content — Account loads without blocking on tender data */}
       <main className="p-8 max-w-7xl mx-auto">
-        {loading ? (
+        {activeTab === 'account' ? (
+          renderContent()
+        ) : loading ? (
           <div className="flex items-center justify-center h-64">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
             <span className="ml-3 text-gray-600">Loading tender data...</span>
@@ -168,6 +196,56 @@ function App() {
         )}
       </main>
     </div>
+  );
+};
+
+function App() {
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
+
+  useEffect(() => {
+    const bootstrapSession = async () => {
+      const token = getAuthToken();
+      if (!token) {
+        setSessionLoading(false);
+        return;
+      }
+
+      try {
+        const user = await apiService.getCurrentUser();
+        setCurrentUser(user);
+      } catch (error) {
+        clearAuthToken();
+        setCurrentUser(null);
+      } finally {
+        setSessionLoading(false);
+      }
+    };
+
+    bootstrapSession();
+  }, []);
+
+  if (sessionLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return <LoginPage onLoginSuccess={setCurrentUser} />;
+  }
+
+  return (
+    <AuthenticatedApp
+      user={currentUser}
+      onUserChange={setCurrentUser}
+      onLogout={() => {
+        clearAuthToken();
+        setCurrentUser(null);
+      }}
+    />
   );
 }
 

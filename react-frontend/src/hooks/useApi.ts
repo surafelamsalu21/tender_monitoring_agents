@@ -15,6 +15,7 @@ export const useApiData = () => {
     try {
       const data = await apiService.getTenders();
       setTenders(data);
+      setError(null);
     } catch (error) {
       console.error('Failed to load tenders');
       setError('Failed to load tenders');
@@ -25,6 +26,7 @@ export const useApiData = () => {
     try {
       const data = await apiService.getPages();
       setPages(data);
+      setError(null);
     } catch (error) {
       console.error('Failed to load pages');
       setError('Failed to load pages');
@@ -35,6 +37,7 @@ export const useApiData = () => {
     try {
       const data = await apiService.getKeywords();
       setKeywords(data);
+      setError(null);
     } catch (error) {
       console.error('Failed to load keywords');
       setError('Failed to load keywords');
@@ -45,6 +48,7 @@ export const useApiData = () => {
     try {
       const status = await apiService.checkHealth();
       setSystemStatus(status);
+      setError(null);
     } catch (error) {
       setSystemStatus({ status: 'error', message: 'Backend not available' });
     }

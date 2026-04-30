@@ -14,6 +14,7 @@ import {
   X, 
   Archive, 
   Zap,
+  Trash2,
   User,
   Phone,
   Mail,
@@ -32,11 +33,38 @@ interface TenderListProps {
 type ViewType = 'processed' | 'all' | 'active' | 'expired';
 type SortType = 'newest' | 'oldest' | 'deadline' | 'urgent';
 
+/** Human-readable countdown; negative days → Expired (not "-1"). */
+function formatDaysUntilDeadlineValue(dv: {
+  days_until_deadline?: number | null;
+  deadline_status?: string;
+  urgency_level?: string;
+}): { text: string; className: string } | null {
+  const d = dv.days_until_deadline;
+  if (d === null || d === undefined) {
+    if (dv.deadline_status === 'expired' || dv.urgency_level === 'expired') {
+      return { text: 'Expired', className: 'text-red-700 font-semibold' };
+    }
+    return null;
+  }
+  const expired =
+    d < 0 || dv.deadline_status === 'expired' || dv.urgency_level === 'expired';
+  if (expired) {
+    return { text: 'Expired', className: 'text-red-700 font-semibold' };
+  }
+  if (d === 0) {
+    return { text: 'Due today', className: 'text-amber-700 font-medium' };
+  }
+  return {
+    text: `${d} ${d === 1 ? 'day' : 'days'}`,
+    className: 'text-gray-800',
+  };
+}
+
 export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
   // State management
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<CategoryType>('all');
-  const [selectedView, setSelectedView] = useState<ViewType>('processed');
+  const [selectedView, setSelectedView] = useState<ViewType>('active');
   const [sortBy, setSortBy] = useState<SortType>('newest');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedTender, setSelectedTender] = useState<Tender | null>(null);
@@ -61,6 +89,26 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
       document.body.style.overflow = 'unset';
     };
   }, [isModalOpen]);
+
+  const getUrgencyScore = (tender: Tender): number => {
+    const dateValidation = tender.detailed_info?.date_validation;
+    if (!dateValidation || !dateValidation.urgency_level) return 0;
+
+    switch (dateValidation.urgency_level) {
+      case 'urgent':
+        return 5;
+      case 'high':
+        return 4;
+      case 'medium':
+        return 3;
+      case 'low':
+        return 2;
+      case 'expired':
+        return 1;
+      default:
+        return 0;
+    }
+  };
 
   // Filter and sort tenders
   const getFilteredTenders = () => {
@@ -129,21 +177,6 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
 
   const filteredTenders = getFilteredTenders();
 
-  // Utility functions
-  const getUrgencyScore = (tender: Tender): number => {
-    const dateValidation = tender.detailed_info?.date_validation;
-    if (!dateValidation || !dateValidation.urgency_level) return 0;
-    
-    switch (dateValidation.urgency_level) {
-      case 'urgent': return 5;
-      case 'high': return 4;
-      case 'medium': return 3;
-      case 'low': return 2;
-      case 'expired': return 1;
-      default: return 0;
-    }
-  };
-
   const formatDate = (dateString: string | null | undefined) => {
     if (!dateString) return 'N/A';
     try {
@@ -174,7 +207,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
       high: { color: 'text-orange-700', bg: 'bg-orange-100', border: 'border-orange-200', icon: Clock, text: 'High Priority' },
       medium: { color: 'text-yellow-700', bg: 'bg-yellow-100', border: 'border-yellow-200', icon: Clock, text: 'Medium' },
       low: { color: 'text-green-700', bg: 'bg-green-100', border: 'border-green-200', icon: CheckCircle, text: 'Low' },
-      expired: { color: 'text-gray-700', bg: 'bg-gray-100', border: 'border-gray-200', icon: Archive, text: 'Expired' }
+      expired: { color: 'text-red-800', bg: 'bg-red-100', border: 'border-red-300', icon: Trash2, text: 'Expired' }
     };
 
     const config = urgencyConfig[urgency_level as keyof typeof urgencyConfig];
@@ -197,7 +230,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
     const processed = tenders.filter(t => t.is_processed).length;
     const all = tenders.length;
     const active = tenders.filter(t => {
-      if (!t.detailed_info?.date_validation) return false;
+      if (!t.detailed_info?.date_validation) return true;
       return ['active', 'urgent'].includes(t.detailed_info.date_validation.deadline_status || '');
     }).length;
     const expired = tenders.filter(t => {
@@ -260,27 +293,39 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
           <div className="p-6 border-b border-gray-200">
             <div className="flex flex-wrap gap-2">
               {[
-                { id: 'processed', label: 'Processed', count: stats.processed, icon: CheckCircle, color: 'blue' },
-                { id: 'all', label: 'All Tenders', count: stats.all, icon: Archive, color: 'gray' },
-                { id: 'active', label: 'Active', count: stats.active, icon: Zap, color: 'green' },
-                { id: 'expired', label: 'Expired', count: stats.expired, icon: Archive, color: 'red' }
+                { id: 'active', label: 'Active', count: stats.active, icon: Zap },
+                { id: 'processed', label: 'Processed', count: stats.processed, icon: CheckCircle },
+                { id: 'all', label: 'All Tenders', count: stats.all, icon: Archive },
+                { id: 'expired', label: 'Expired', count: stats.expired, icon: Trash2 },
               ].map((view) => {
                 const Icon = view.icon;
-                const isActive = selectedView === view.id;
-                
+                const isSel = selectedView === view.id;
+
+                const selectedClass =
+                  view.id === 'active'
+                    ? 'bg-emerald-600 text-white shadow-md ring-2 ring-emerald-300 border-transparent'
+                    : view.id === 'processed'
+                      ? 'bg-blue-600 text-white shadow-md border-transparent'
+                      : view.id === 'all'
+                        ? 'bg-slate-700 text-white shadow-md border-transparent'
+                        : 'bg-red-600 text-white shadow-md ring-2 ring-red-400 border-transparent';
+
+                const idleClass =
+                  view.id === 'active'
+                    ? 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
+                    : view.id === 'processed'
+                      ? 'bg-blue-50 text-blue-900 border-blue-200 hover:bg-blue-100'
+                      : view.id === 'all'
+                        ? 'bg-gray-100 text-gray-800 border-gray-200 hover:bg-gray-200'
+                        : 'bg-red-50 text-red-900 border-red-200 hover:bg-red-100';
+
                 return (
                   <button
                     key={view.id}
                     onClick={() => setSelectedView(view.id as ViewType)}
-                    className={`
-                      flex items-center px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200
-                      ${isActive 
-                        ? 'bg-blue-600 text-white shadow-md' 
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                      }
-                    `}
+                    className={`flex items-center px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 border ${isSel ? selectedClass : idleClass}`}
                   >
-                    <Icon className="h-4 w-4 mr-2" />
+                    <Icon className="h-4 w-4 mr-2 shrink-0" />
                     {view.label} ({view.count})
                   </button>
                 );
@@ -330,8 +375,28 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
             </div>
 
             {/* View Description */}
-            <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
-              <p className="text-sm text-blue-800">
+            <div
+              className={`mt-4 p-3 rounded-lg border ${
+                selectedView === 'expired'
+                  ? 'bg-red-50 border-red-200'
+                  : selectedView === 'active'
+                    ? 'bg-emerald-50 border-emerald-200'
+                    : selectedView === 'processed'
+                      ? 'bg-blue-50 border-blue-200'
+                      : 'bg-slate-50 border-slate-200'
+              }`}
+            >
+              <p
+                className={`text-sm ${
+                  selectedView === 'expired'
+                    ? 'text-red-900'
+                    : selectedView === 'active'
+                      ? 'text-emerald-900'
+                      : selectedView === 'processed'
+                        ? 'text-blue-900'
+                        : 'text-slate-800'
+                }`}
+              >
                 {selectedView === 'processed' && "Showing tenders that have been processed by Agent 2 with detailed information."}
                 {selectedView === 'all' && "Showing all tenders extracted by Agent 1, including unprocessed ones."}
                 {selectedView === 'active' && "Showing only tenders with active deadlines (not expired)."}
@@ -705,15 +770,17 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                               {detailedTender.detailed_info.date_validation.urgency_level || 'Unknown'}
                             </span>
                           </div>
-                          {detailedTender.detailed_info.date_validation.days_until_deadline !== null && 
-                           detailedTender.detailed_info.date_validation.days_until_deadline !== undefined && (
-                            <div className="col-span-2">
-                              <span className="text-sm font-medium text-gray-600">Days until deadline:</span>
-                              <span className="ml-2 text-sm text-gray-800">
-                                {detailedTender.detailed_info.date_validation.days_until_deadline}
-                              </span>
-                            </div>
-                          )}
+                          {(() => {
+                            const dv = detailedTender.detailed_info.date_validation;
+                            const display = formatDaysUntilDeadlineValue(dv);
+                            if (!display) return null;
+                            return (
+                              <div className="col-span-2">
+                                <span className="text-sm font-medium text-gray-600">Days until deadline:</span>
+                                <span className={`ml-2 text-sm ${display.className}`}>{display.text}</span>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     )}

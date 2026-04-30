@@ -25,6 +25,10 @@ async def lifespan(app: FastAPI):
     global scheduler
     
     logger.info("Starting Tender Monitoring System...")
+
+    # Always ensure DB schema exists, even when app is started directly
+    # via `uvicorn app.main:app`.
+    create_tables()
     
     # Initialize scheduler
     scheduler = TenderScheduler()
