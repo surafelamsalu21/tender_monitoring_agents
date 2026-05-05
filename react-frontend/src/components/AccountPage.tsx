@@ -177,7 +177,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
               onChange={(e) => setFullName(e.target.value)}
               placeholder="Your full name"
               autoComplete="name"
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             />
           </div>
           {profileMessage && (
@@ -209,7 +209,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
             value={oldPassword}
             onChange={(e) => setOldPassword(e.target.value)}
             placeholder="Current password"
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
             autoComplete="current-password"
           />
           <input
@@ -217,7 +217,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             placeholder="New password (min 8 characters)"
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
             autoComplete="new-password"
           />
           <input
@@ -225,7 +225,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             placeholder="Confirm new password"
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
             autoComplete="new-password"
           />
           {passwordMessage && (
@@ -260,7 +260,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
               value={resetEmail}
               onChange={(e) => setResetEmail(e.target.value)}
               placeholder={"User's company email"}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
               autoComplete="off"
             />
             <input
@@ -268,7 +268,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
               value={resetNewPassword}
               onChange={(e) => setResetNewPassword(e.target.value)}
               placeholder="New password (min 8 characters)"
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
               autoComplete="new-password"
             />
             <input
@@ -276,7 +276,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
               value={resetConfirmPassword}
               onChange={(e) => setResetConfirmPassword(e.target.value)}
               placeholder="Confirm new password"
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
               autoComplete="new-password"
             />
             {resetMessage && (
@@ -303,7 +303,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
       {user.role === 'super_admin' && (
         <section className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-3">
-            <UserPlus className="h-5 w-5 text-blue-600 shrink-0" />
+            <UserPlus className="h-5 w-5 text-primary-600 shrink-0" />
             <div>
               <h3 className="text-sm font-semibold text-gray-900">Add company user</h3>
               <p className="text-xs text-gray-500">Allowed company domains only. Password is not emailed — share it securely.</p>
@@ -315,26 +315,26 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
               value={inviteEmail}
               onChange={(e) => setInviteEmail(e.target.value)}
               placeholder="name@company.com"
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
             />
             <input
               type="text"
               value={inviteFullName}
               onChange={(e) => setInviteFullName(e.target.value)}
               placeholder="Full name (optional)"
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
             />
             <input
               type="password"
               value={invitePassword}
               onChange={(e) => setInvitePassword(e.target.value)}
               placeholder="Temporary password (min 8 characters)"
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
             />
             <select
               value={inviteRole}
               onChange={(e) => setInviteRole(e.target.value as 'viewer' | 'analyst' | 'admin')}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
             >
               <option value="viewer">viewer</option>
               <option value="analyst">analyst</option>
@@ -348,7 +348,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
             <button
               type="submit"
               disabled={inviteSaving || !inviteEmail.trim() || invitePassword.length < 8}
-              className="inline-flex justify-center px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              className="inline-flex justify-center px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 disabled:opacity-50"
             >
               {inviteSaving ? 'Creating…' : 'Create user'}
             </button>

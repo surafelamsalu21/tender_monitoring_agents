@@ -157,7 +157,7 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
       .replace(/\*(.*?)\*/g, '<em class="italic text-gray-700">$1</em>')
       
       // Convert links
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-blue-600 hover:text-blue-800 underline" target="_blank" rel="noopener noreferrer">$1</a>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-primary-600 hover:text-primary-800 underline" target="_blank" rel="noopener noreferrer">$1</a>')
       
       // Convert inline code
       .replace(/`([^`]+)`/g, '<code class="bg-gray-100 text-gray-800 px-1 py-0.5 rounded text-sm font-mono">$1</code>')
@@ -167,7 +167,7 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
       .replace(/\n/g, '<br/>');
     
     // Handle lists
-    html = html.replace(/^[\s]*[\*\-\+] (.*)$/gm, '<li class="ml-4 mb-1 text-gray-700">• $1</li>');
+    html = html.replace(/^[\s]*[-*+] (.*)$/gm, '<li class="ml-4 mb-1 text-gray-700">• $1</li>');
     
     // Wrap in paragraphs if not already wrapped
     if (!html.includes('<p>') && !html.includes('<h1>') && !html.includes('<h2>') && !html.includes('<h3>')) {
@@ -220,14 +220,14 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
                     }
                   }}
                   placeholder="https://example.com/tenders"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
                   disabled={testing}
                 />
               </div>
               <button
                 onClick={testCrawler}
                 disabled={testing || !testUrl.trim()}
-                className="flex items-center px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex items-center px-6 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {testing ? (
                   <>
@@ -302,7 +302,7 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
                   href={crawlResult.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center px-3 py-2 text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors"
+                  className="flex items-center px-3 py-2 text-primary-600 hover:text-primary-700 hover:bg-primary-50 rounded-lg transition-colors"
                 >
                   <ExternalLink className="h-4 w-4 mr-1" />
                   Visit Page
@@ -331,12 +331,12 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
                 </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                  <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                  <div className="bg-primary-50 p-4 rounded-lg border border-primary-200">
                     <div className="flex items-center mb-2">
-                      <FileText className="h-5 w-5 text-blue-600 mr-2" />
-                      <span className="font-semibold text-blue-900">Content</span>
+                      <FileText className="h-5 w-5 text-primary-600 mr-2" />
+                      <span className="font-semibold text-primary-900">Content</span>
                     </div>
-                    <p className="text-blue-800 text-sm">
+                    <p className="text-primary-800 text-sm">
                       {crawlResult.word_count || 0} words, {formatFileSize(crawlResult.char_count || 0)}
                     </p>
                   </div>
@@ -351,12 +351,12 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
                     </p>
                   </div>
                   
-                  <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                  <div className="bg-primary-50 p-4 rounded-lg border border-primary-200">
                     <div className="flex items-center mb-2">
-                      <Clock className="h-5 w-5 text-purple-600 mr-2" />
-                      <span className="font-semibold text-purple-900">Status</span>
+                      <Clock className="h-5 w-5 text-primary-600 mr-2" />
+                      <span className="font-semibold text-primary-900">Status</span>
                     </div>
-                    <p className="text-purple-800 text-sm">Ready to monitor</p>
+                    <p className="text-primary-800 text-sm">Ready to monitor</p>
                   </div>
                 </div>
 
@@ -395,7 +395,7 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
                       onClick={() => setShowMarkdown(true)}
                       className={`px-3 py-1 text-sm rounded transition-colors ${
                         showMarkdown 
-                          ? 'bg-blue-600 text-white' 
+                          ? 'bg-primary-600 text-white' 
                           : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                       }`}
                     >
@@ -405,7 +405,7 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
                       onClick={() => setShowMarkdown(false)}
                       className={`px-3 py-1 text-sm rounded transition-colors ${
                         !showMarkdown 
-                          ? 'bg-blue-600 text-white' 
+                          ? 'bg-primary-600 text-white' 
                           : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                       }`}
                     >
@@ -457,7 +457,7 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
                       value={pageName}
                       onChange={(e) => setPageName(e.target.value)}
                       placeholder="Enter a descriptive name for this page"
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
                     />
                   </div>
                   
@@ -492,16 +492,16 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
 
       {/* Help Section */}
       {!crawlResult && (
-        <div className="bg-blue-50 rounded-xl border border-blue-200 p-6">
-          <h3 className="text-lg font-semibold text-blue-900 mb-3">How to Use Test Crawler</h3>
-          <div className="space-y-2 text-blue-800">
+        <div className="bg-primary-50 rounded-xl border border-primary-200 p-6">
+          <h3 className="text-lg font-semibold text-primary-900 mb-3">How to Use Test Crawler</h3>
+          <div className="space-y-2 text-primary-800">
             <p>1. Enter the URL of a tender/procurement page you want to monitor</p>
             <p>2. Click "Test Crawler" to see if crawl4ai can extract content successfully</p>
             <p>3. Review the extracted content to ensure it contains tender information</p>
             <p>4. If successful, give the page a descriptive name and click "Add to Pages"</p>
           </div>
-          <div className="mt-4 p-3 bg-blue-100 rounded-lg">
-            <p className="text-sm text-blue-700">
+          <div className="mt-4 p-3 bg-primary-100 rounded-lg">
+            <p className="text-sm text-primary-700">
               <strong>Tip:</strong> Look for pages that contain lists of tenders, procurement opportunities, or bidding information. 
               The crawler works best with well-structured HTML pages.
             </p>

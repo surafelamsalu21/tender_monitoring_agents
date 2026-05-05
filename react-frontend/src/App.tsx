@@ -43,7 +43,11 @@ const AuthenticatedApp: React.FC<{
     loadPages,
     loadKeywords,
     triggerExtraction,
-    setError
+    setError,
+    isExtracting,
+    extractionPhase,
+    extractionPhaseLabel,
+    extractionProgress,
   } = useApiData();
 
   const refreshData = async () => {
@@ -64,15 +68,19 @@ const AuthenticatedApp: React.FC<{
     switch (activeTab) {
       case 'dashboard':
         return (
-          <Dashboard 
+          <Dashboard
             stats={stats}
             systemStatus={systemStatus}
             tenders={tenders}
             onTriggerExtraction={triggerExtraction}
+            isExtracting={isExtracting}
+            extractionPhase={extractionPhase}
+            extractionPhaseLabel={extractionPhaseLabel}
+            extractionProgress={extractionProgress}
           />
         );
       case 'tenders':
-        return <TenderList tenders={tenders} />;
+        return <TenderList tenders={tenders} onRefresh={loadTenders} />;
       case 'pages':
         return <PageManager pages={pages} onRefresh={refreshData} />;
       case 'keywords':
@@ -85,11 +93,15 @@ const AuthenticatedApp: React.FC<{
         return <Settings />;
       default:
         return (
-          <Dashboard 
-            stats={stats} 
-            systemStatus={systemStatus} 
+          <Dashboard
+            stats={stats}
+            systemStatus={systemStatus}
             tenders={tenders}
-            onTriggerExtraction={triggerExtraction} 
+            onTriggerExtraction={triggerExtraction}
+            isExtracting={isExtracting}
+            extractionPhase={extractionPhase}
+            extractionPhaseLabel={extractionPhaseLabel}
+            extractionProgress={extractionProgress}
           />
         );
     }
@@ -101,9 +113,12 @@ const AuthenticatedApp: React.FC<{
       <header className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-6">
           {/* Top bar with title */}
-          <div className="flex items-center justify-between h-16 border-b border-gray-100">
+          <div className="flex items-center justify-between py-3 min-h-16 border-b border-gray-100">
             <div className="flex items-center">
-              <h1 className="text-2xl font-bold text-gray-900">Tender Monitor</h1>
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900 leading-tight">Precise</h1>
+                <p className="text-sm text-brand-muted">Tender monitoring</p>
+              </div>
               {/* Show processing indicator */}
               {tenders.length > 0 && (
                 <div className="ml-6 flex items-center text-sm text-gray-500">
@@ -146,33 +161,23 @@ const AuthenticatedApp: React.FC<{
           <nav className="flex space-x-8 py-4">
             {navigation.map((item) => {
               const Icon = item.icon;
-              // Add badge for tenders tab to show processed count
               const showBadge = item.id === 'tenders' && tenders.filter(t => t.is_processed).length > 0;
-              // Add special styling for test crawler tab
-              const isTestCrawler = item.id === 'test-crawler';
-              
+
               return (
                 <button
                   key={item.id}
                   onClick={() => setActiveTab(item.id as TabType)}
                   className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors relative ${
                     activeTab === item.id
-                      ? isTestCrawler 
-                        ? 'bg-purple-100 text-purple-700 border-2 border-purple-200'
-                        : 'bg-blue-100 text-blue-700 border-2 border-blue-200'
+                      ? 'bg-primary-100 text-primary-700 border-2 border-primary-200'
                       : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 border-2 border-transparent'
                   }`}
                 >
-                  <Icon className={`h-5 w-5 mr-2 ${isTestCrawler ? 'text-purple-600' : ''}`} />
+                  <Icon className="h-5 w-5 mr-2" />
                   {item.name}
                   {showBadge && (
                     <span className="ml-2 bg-green-500 text-white text-xs px-2 py-0.5 rounded-full">
                       {tenders.filter(t => t.is_processed).length}
-                    </span>
-                  )}
-                  {isTestCrawler && activeTab === item.id && (
-                    <span className="ml-2 bg-purple-500 text-white text-xs px-2 py-0.5 rounded-full">
-                      NEW
                     </span>
                   )}
                 </button>
@@ -188,7 +193,7 @@ const AuthenticatedApp: React.FC<{
           renderContent()
         ) : loading ? (
           <div className="flex items-center justify-center h-64">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
             <span className="ml-3 text-gray-600">Loading tender data...</span>
           </div>
         ) : (
@@ -228,7 +233,7 @@ function App() {
   if (sessionLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
+        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary-600"></div>
       </div>
     );
   }

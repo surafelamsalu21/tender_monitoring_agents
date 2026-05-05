@@ -3,7 +3,7 @@ Updated Background Scheduler Service with Agent 3 Integration
 Extended pipeline: Main Page → Agent1 → DB1 → Agent2 → DB2 → Agent3 → Enhanced Email
 """
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 import logging
 from sqlalchemy.orm import Session
@@ -16,8 +16,19 @@ from app.services.email_service import EnhancedEmailService
 from app.repositories.tender_repository import TenderRepository
 from app.repositories.page_repository import PageRepository
 from app.repositories.keyword_repository import KeywordRepository
+from app.repositories.email_settings_repository import EmailSettingsRepository
+from app.crawl.eligibility import is_monitored_page_due_for_crawl
+from app.crawl.orchestrator import harvest_for_page
+from app.utils.listing_prep import dual_markdown_for_agent1_and_expiry
+from app.pipeline.crawl_artifact import crawl_artifact_from_harvest
+from app.pipeline.progress import pipeline_tty
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_crawl_strategy(page: MonitoredPage) -> str:
+    return (getattr(page, "crawl_strategy", None) or "crawl4ai").strip().lower()
+
 
 class TenderScheduler:
     """Background scheduler with Agent 3 integration for intelligent email notifications"""
@@ -30,6 +41,8 @@ class TenderScheduler:
         self.keyword_repo = KeywordRepository()
         self.running = False
         self.task = None
+        self.extraction_in_progress = False
+        self.extraction_started_at: str | None = None
     
     async def start(self):
         """Start the periodic crawling scheduler"""
@@ -70,8 +83,15 @@ class TenderScheduler:
                 logger.error(f"Error in periodic task: {e}")
                 await asyncio.sleep(60)  # Wait 1 minute before retrying
     
-    async def run_extraction_once(self):
-        """Run the extended extraction pipeline once"""
+    async def run_extraction_once(self, force: bool = False):
+        """Run the extended extraction pipeline once.
+
+        Args:
+            force: If True, ignore per-page crawl_frequency_hours (e.g. manual trigger).
+        """
+        from datetime import datetime, timezone
+        self.extraction_in_progress = True
+        self.extraction_started_at = datetime.now(timezone.utc).isoformat()
         logger.info("Starting extended tender extraction cycle with Agent 3...")
         
         db = SessionLocal()
@@ -83,15 +103,22 @@ class TenderScheduler:
                 logger.warning("No active monitored pages found")
                 return
             
-            logger.info(f"Processing {len(pages)} pages")
-            logger.info("Using checklist screening model (v1_checklist)")
+            logger.info(f"Processing {len(pages)} pages (force={force})")
+            _pm = (settings.PIPELINE_MODE or "simple").strip().lower()
+            if _pm in ("langgraph", "legacy"):
+                logger.info("Pipeline mode=%s (LangGraph + checklist Agent 1)", _pm)
+            else:
+                logger.info(
+                    "Pipeline mode=%s (crawler artifact → ListingStructureAgent → Agent 2/3)",
+                    _pm,
+                )
             
             # Step 3: Process each monitored page through extended pipeline
             total_new_tenders = 0
             all_email_compositions = []
             
             for page in pages:
-                page_result = await self._process_page_extended_pipeline(db, page)
+                page_result = await self._process_page_extended_pipeline(db, page, force=force)
                 total_new_tenders += page_result['new_tenders_count']
                 all_email_compositions.extend(page_result['email_compositions'])
             
@@ -107,18 +134,31 @@ class TenderScheduler:
             logger.error(f"Error in extended extraction cycle: {e}")
         finally:
             db.close()
+            self.extraction_in_progress = False
+            self.extraction_started_at = None
     
-    async def _process_page_extended_pipeline(self, db: Session, page: MonitoredPage) -> Dict[str, Any]:
+    async def _process_page_extended_pipeline(
+        self, db: Session, page: MonitoredPage, force: bool = False
+    ) -> Dict[str, Any]:
         """
         Process a single monitored page through the extended pipeline with Agent 3
         
         Extended Pipeline Flow:
-        1. Scrape main page content with crawl4ai
+        1. Harvest main page (crawl4ai or future Playwright) → markdown
         2. Agent 1: Extract & categorize tenders from main page → Save to DB1
         3. Agent 2: Extract details from individual tender pages → Save to DB2
         4. Agent 3: Compose intelligent email content
         5. Return email compositions for sending
         """
+        if not force and not is_monitored_page_due_for_crawl(page):
+            logger.info(
+                "Skipping page %s (id=%s): not due (crawl_frequency_hours=%s, last_crawled=%s)",
+                page.name,
+                page.id,
+                page.crawl_frequency_hours,
+                page.last_crawled.isoformat() if page.last_crawled else None,
+            )
+            return {'new_tenders_count': 0, 'email_compositions': [], 'skipped': True}
         logger.info(f"Processing page through extended pipeline: {page.name} ({page.url})")
         
         # Create crawl log
@@ -131,109 +171,126 @@ class TenderScheduler:
         db.commit()
         
         try:
-            # Step 1: Scrape main page content using crawl4ai
-            from app.services.scraper import TenderScraper
-            
-            async with TenderScraper() as scraper:
-                logger.info(f"Scraping main page: {page.url}")
-                scrape_result = await scraper.scrape_page(page.url)
-                
-                if scrape_result['status'] != 'success':
-                    error_msg = scrape_result.get('error', 'Unknown scraping error')
-                    logger.error(f"Failed to scrape main page {page.url}: {error_msg}")
-                    
-                    # Update crawl log with failure
-                    crawl_log.status = "failed"
-                    crawl_log.error_message = error_msg
-                    crawl_log.completed_at = datetime.utcnow()
-                    db.commit()
-                    
-                    # Update page failure count
-                    page.consecutive_failures += 1
-                    page.last_crawled = datetime.utcnow()
-                    db.commit()
-                    return {'new_tenders_count': 0, 'email_compositions': []}
-                
-                logger.info(f"Successfully scraped main page: {len(scrape_result['markdown'])} characters")
-                
-                # Step 2-4: Run extended agent workflow (including Agent 3)
-                try:
-                    logger.info("Starting extended agent pipeline with Agent 3...")
-                    
-                    result = await self.tender_agent.process_page(
-                        page_content=scrape_result['markdown'],
-                        page_url=page.url,
-                        page_id=page.id,
-                        tender_repo=self.tender_repo,
-                        db=db
-                    )
-                    
-                    logger.info("Extended agent pipeline completed")
-                    
-                except Exception as workflow_error:
-                    logger.error(f"Extended agent pipeline failed for page {page.url}: {workflow_error}")
-                    
-                    # Update crawl log with workflow failure
-                    crawl_log.status = "failed"
-                    crawl_log.error_message = f"Extended agent pipeline error: {str(workflow_error)}"
-                    crawl_log.completed_at = datetime.utcnow()
-                    db.commit()
-                    
-                    # Update page failure count
-                    page.consecutive_failures += 1
-                    page.last_crawled = datetime.utcnow()
-                    db.commit()
-                    return {'new_tenders_count': 0, 'email_compositions': []}
-                
-                # Step 5: Process results
-                if result.get('workflow_failed'):
-                    error_msg = result.get('error', 'Extended workflow failed')
-                    logger.error(f"Extended workflow failed for page {page.url}: {error_msg}")
-                    
-                    # Update crawl log with workflow failure
-                    crawl_log.status = "failed"
-                    crawl_log.error_message = error_msg
-                    crawl_log.completed_at = datetime.utcnow()
-                    db.commit()
-                    
-                    # Update page failure count
-                    page.consecutive_failures += 1
-                    page.last_crawled = datetime.utcnow()
-                    db.commit()
-                    return {'new_tenders_count': 0, 'email_compositions': []}
-                
-                # Step 6: Log success metrics
-                basic_count = result.get('total_saved_basic', 0)
-                detailed_count = result.get('total_saved_detailed', 0)
-                email_count = result.get('total_email_compositions', 0)
-                duplicate_count = result.get('duplicate_count', 0)
-                
-                logger.info(f"Extended Pipeline Results for {page.name}:")
-                logger.info(f"   Basic tenders saved to DB1: {basic_count}")
-                logger.info(f"   Detailed tenders saved to DB2: {detailed_count}")
-                logger.info(f"   Email compositions created: {email_count}")
-                logger.info(f"   Duplicates filtered: {duplicate_count}")
-                
-                # Update crawl log with success
-                crawl_log.status = "completed"
-                crawl_log.tenders_found = basic_count
-                crawl_log.tenders_new = basic_count
+            strategy = _normalize_crawl_strategy(page)
+            logger.info(
+                "Harvesting page %s via strategy=%s",
+                page.url,
+                strategy,
+            )
+            harvest = await harvest_for_page(page)
+
+            if harvest.status != "success":
+                error_msg = harvest.error or "Harvest failed"
+                logger.error(f"Failed to harvest main page {page.url}: {error_msg}")
+
+                crawl_log.status = "failed"
+                crawl_log.error_message = error_msg
                 crawl_log.completed_at = datetime.utcnow()
                 db.commit()
-                
-                # Update page success status
-                page.consecutive_failures = 0
+
+                page.consecutive_failures += 1
                 page.last_crawled = datetime.utcnow()
-                page.last_successful_crawl = datetime.utcnow()
                 db.commit()
-                
-                logger.info(f"Successfully processed page {page.url} through extended pipeline")
-                
-                return {
-                    'new_tenders_count': basic_count,
-                    'email_compositions': result.get('email_compositions', [])
-                }
-                
+                return {'new_tenders_count': 0, 'email_compositions': []}
+
+            logger.info(
+                "Successfully harvested main page: %s characters (links=%s)",
+                len(harvest.markdown or ""),
+                len(harvest.listing_urls),
+            )
+
+            crawl_artifact = crawl_artifact_from_harvest(harvest)
+            pipeline_mode = (settings.PIPELINE_MODE or "simple").strip().lower()
+            if pipeline_mode in ("langgraph", "legacy"):
+                agent_md, listing_for_expiry = dual_markdown_for_agent1_and_expiry(
+                    page.url,
+                    harvest.markdown or "",
+                    harvest.listing_urls,
+                    html=harvest.html,
+                )
+                crawl_artifact_kw = None
+            else:
+                agent_md = harvest.markdown or ""
+                listing_for_expiry = harvest.markdown or ""
+                crawl_artifact_kw = crawl_artifact
+
+            pipeline_tty(
+                f"[PIPELINE] · handoff | {len(harvest.markdown or ''):,} chars | "
+                f"links={len(harvest.listing_urls)} | pipeline={pipeline_mode}"
+            )
+
+            try:
+                logger.info("Starting extended agent pipeline with Agent 3...")
+
+                result = await self.tender_agent.process_page(
+                    page_content=agent_md,
+                    page_url=page.url,
+                    page_id=page.id,
+                    tender_repo=self.tender_repo,
+                    db=db,
+                    listing_markdown_for_expiry=listing_for_expiry,
+                    crawl_artifact=crawl_artifact_kw,
+                )
+
+                logger.info("Extended agent pipeline completed")
+
+            except Exception as workflow_error:
+                logger.error(
+                    f"Extended agent pipeline failed for page {page.url}: {workflow_error}"
+                )
+
+                crawl_log.status = "failed"
+                crawl_log.error_message = f"Extended agent pipeline error: {str(workflow_error)}"
+                crawl_log.completed_at = datetime.utcnow()
+                db.commit()
+
+                page.consecutive_failures += 1
+                page.last_crawled = datetime.utcnow()
+                db.commit()
+                return {'new_tenders_count': 0, 'email_compositions': []}
+
+            if result.get('workflow_failed'):
+                error_msg = result.get('error', 'Extended workflow failed')
+                logger.error(f"Extended workflow failed for page {page.url}: {error_msg}")
+
+                crawl_log.status = "failed"
+                crawl_log.error_message = error_msg
+                crawl_log.completed_at = datetime.utcnow()
+                db.commit()
+
+                page.consecutive_failures += 1
+                page.last_crawled = datetime.utcnow()
+                db.commit()
+                return {'new_tenders_count': 0, 'email_compositions': []}
+
+            basic_count = result.get('total_saved_basic', 0)
+            detailed_count = result.get('total_saved_detailed', 0)
+            email_count = result.get('total_email_compositions', 0)
+            duplicate_count = result.get('duplicate_count', 0)
+
+            logger.info(f"Extended Pipeline Results for {page.name}:")
+            logger.info(f"   Basic tenders saved to DB1: {basic_count}")
+            logger.info(f"   Detailed tenders saved to DB2: {detailed_count}")
+            logger.info(f"   Email compositions created: {email_count}")
+            logger.info(f"   Duplicates filtered: {duplicate_count}")
+
+            crawl_log.status = "completed"
+            crawl_log.tenders_found = basic_count
+            crawl_log.tenders_new = basic_count
+            crawl_log.completed_at = datetime.utcnow()
+            db.commit()
+
+            page.consecutive_failures = 0
+            page.last_crawled = datetime.utcnow()
+            page.last_successful_crawl = datetime.utcnow()
+            db.commit()
+
+            logger.info(f"Successfully processed page {page.url} through extended pipeline")
+
+            return {
+                'new_tenders_count': basic_count,
+                'email_compositions': result.get('email_compositions', []),
+            }
         except Exception as e:
             logger.error(f"Error processing page {page.url} through extended pipeline: {e}")
             
@@ -268,14 +325,23 @@ class TenderScheduler:
             logger.info(f"   Failed sends: {results['failed_sends']}")
             
             if results['errors']:
-                logger.warning(f"Email sending errors:")
+                logger.warning("Email sending errors:")
                 for error in results['errors']:
-                    logger.warning(f"   - {error['tender_title']}: {error['error']}")
-            
+                    logger.warning(
+                        "   - %s: %s",
+                        error.get('tender_title', '(unknown)'),
+                        error.get('error', error),
+                    )
+
             if results['sent_emails']:
                 logger.info("Successfully sent intelligent emails:")
                 for email in results['sent_emails']:
-                    logger.info(f"   - {email['tender_title']} to {email['team_category']} team (Priority: {email['priority']})")
+                    logger.info(
+                        "   - %s to %s team (Priority: %s)",
+                        email.get('tender_title', email.get('subject', '(unknown)')),
+                        email.get('team_category', '(unknown)'),
+                        email.get('priority', 'Medium'),
+                    )
             
         except Exception as e:
             logger.error(f"Error sending intelligent notifications: {e}")
@@ -314,7 +380,7 @@ class TenderScheduler:
     async def test_extended_pipeline(self):
         """Test the extended pipeline with Agent 3 (for development)"""
         logger.info("Running extended pipeline test with Agent 3...")
-        await self.run_extraction_once()
+        await self.run_extraction_once(force=True)
         logger.info("Extended pipeline test completed")
     
     async def test_agent3_email_composition(self, test_email: str = None):
@@ -323,11 +389,22 @@ class TenderScheduler:
             logger.info("Testing Agent 3 email composition...")
             
             if not test_email:
-                # Use ESG team email as default
-                test_email = settings.ESG_TEAM_EMAIL
+                test_email = settings.SCREENING_DEFAULT_TEST_EMAIL
                 if not test_email:
-                    logger.error("No test email provided and no ESG_TEAM_EMAIL configured")
-                    return
+                    db = SessionLocal()
+                    try:
+                        email_repo = EmailSettingsRepository()
+                        recipients = email_repo.get_emails_by_category(
+                            db, "screening_opportunities"
+                        )
+                        test_email = recipients[0] if recipients else None
+                    finally:
+                        db.close()
+                if not test_email:
+                    logger.error(
+                        "No test email provided and no SCREENING_DEFAULT_TEST_EMAIL "
+                        "or configured screening notification recipients"
+                    )
             
             # Send test intelligent email
             result = await self.email_service.send_test_intelligent_email(test_email)

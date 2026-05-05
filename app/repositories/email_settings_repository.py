@@ -12,12 +12,56 @@ from app.models.email_settings import EmailNotificationSettings, EmailNotificati
 
 logger = logging.getLogger(__name__)
 
+LEGACY_EMAIL_SETTING_KEYS = frozenset({"esg_emails", "credit_emails"})
+
+
 class EmailSettingsRepository:
     """Repository for email settings database operations"""
-    
+
+    def migrate_legacy_email_notification_settings(self, db: Session) -> None:
+        """Merge legacy team lists into opportunity_emails and delete legacy rows."""
+        legacy_rows = (
+            db.query(EmailNotificationSettings)
+            .filter(EmailNotificationSettings.setting_key.in_(LEGACY_EMAIL_SETTING_KEYS))
+            .all()
+        )
+        if not legacy_rows:
+            return
+
+        opp = (
+            db.query(EmailNotificationSettings)
+            .filter(EmailNotificationSettings.setting_key == "opportunity_emails")
+            .first()
+        )
+        merged: List[str] = []
+        if opp and opp.setting_value:
+            merged = list(opp.setting_value)
+        for row in legacy_rows:
+            if row.setting_value:
+                merged.extend(row.setting_value)
+        merged = list(dict.fromkeys(merged))
+
+        if opp:
+            opp.setting_value = merged
+            opp.updated_at = datetime.utcnow()
+        else:
+            db.add(
+                EmailNotificationSettings(
+                    setting_key="opportunity_emails",
+                    setting_value=merged,
+                    description="Recipients for opportunity screening notifications",
+                )
+            )
+        for row in legacy_rows:
+            db.delete(row)
+        db.commit()
+        logger.info("Migrated legacy notification email rows into opportunity_emails")
+
     def get_email_settings(self, db: Session) -> Dict[str, Any]:
         """Get current email settings from database"""
         try:
+            self.migrate_legacy_email_notification_settings(db)
+
             opportunity_setting = db.query(EmailNotificationSettings).filter(
                 EmailNotificationSettings.setting_key == 'opportunity_emails'
             ).first()
@@ -26,19 +70,11 @@ class EmailSettingsRepository:
                 EmailNotificationSettings.setting_key == 'preferences'
             ).first()
             
-            if opportunity_setting and opportunity_setting.setting_value:
-                opportunity_emails = opportunity_setting.setting_value
-            else:
-                # Backward compatibility for previously split recipient lists.
-                esg_setting = db.query(EmailNotificationSettings).filter(
-                    EmailNotificationSettings.setting_key == "esg_emails"
-                ).first()
-                credit_setting = db.query(EmailNotificationSettings).filter(
-                    EmailNotificationSettings.setting_key == "credit_emails"
-                ).first()
-                esg_emails = esg_setting.setting_value if esg_setting and esg_setting.setting_value else []
-                credit_emails = credit_setting.setting_value if credit_setting and credit_setting.setting_value else []
-                opportunity_emails = list(dict.fromkeys([*esg_emails, *credit_emails]))
+            opportunity_emails = (
+                list(opportunity_setting.setting_value)
+                if opportunity_setting and opportunity_setting.setting_value
+                else []
+            )
 
             return {
                 'opportunity_emails': opportunity_emails,
@@ -63,6 +99,8 @@ class EmailSettingsRepository:
     def save_email_settings(self, db: Session, settings: Dict[str, Any]) -> bool:
         """Save email settings to database"""
         try:
+            self.migrate_legacy_email_notification_settings(db)
+
             # Save or update unified opportunity recipient list.
             opportunity_setting = db.query(EmailNotificationSettings).filter(
                 EmailNotificationSettings.setting_key == 'opportunity_emails'
@@ -75,7 +113,7 @@ class EmailSettingsRepository:
                 opportunity_setting = EmailNotificationSettings(
                     setting_key='opportunity_emails',
                     setting_value=settings.get('opportunity_emails', []),
-                    description='Opportunity notifications recipient email addresses'
+                    description='Recipients for opportunity screening notifications'
                 )
                 db.add(opportunity_setting)
             
@@ -111,11 +149,11 @@ class EmailSettingsRepository:
             if category not in ["screening_opportunities", "opportunity", "opportunities"]:
                 # Legacy support: map older categories to unified recipient list.
                 setting_key = "opportunity_emails"
-            
+
             setting = db.query(EmailNotificationSettings).filter(
                 EmailNotificationSettings.setting_key == setting_key
             ).first()
-            
+
             if setting and setting.setting_value:
                 return setting.setting_value
 
@@ -129,7 +167,7 @@ class EmailSettingsRepository:
             esg_emails = esg_setting.setting_value if esg_setting and esg_setting.setting_value else []
             credit_emails = credit_setting.setting_value if credit_setting and credit_setting.setting_value else []
             return list(dict.fromkeys([*esg_emails, *credit_emails]))
-                
+
         except Exception as e:
             logger.error(f"Error retrieving emails for category {category}: {e}")
             return []
@@ -137,6 +175,7 @@ class EmailSettingsRepository:
     def add_email_to_category(self, db: Session, category: str, email: str) -> bool:
         """Add email to specific category - FIXED VERSION"""
         try:
+            self.migrate_legacy_email_notification_settings(db)
             setting_key = "opportunity_emails"
             
             setting = db.query(EmailNotificationSettings).filter(
@@ -152,7 +191,7 @@ class EmailSettingsRepository:
                     current_emails.append(email)
                     setting.setting_value = current_emails
                     setting.updated_at = datetime.utcnow()
-                    logger.info(f"Adding email {email} to unified {category} recipient list")
+                    logger.info(f"Adding email {email} to opportunity screening recipient list ({category})")
                 else:
                     logger.info(f"Email {email} already exists in {category} recipient list")
                     return True  # Still return True since email is in the list
@@ -161,7 +200,7 @@ class EmailSettingsRepository:
                 setting = EmailNotificationSettings(
                     setting_key=setting_key,
                     setting_value=[email],
-                    description="Opportunity notifications recipient email addresses",
+                    description="Recipients for opportunity screening notifications",
                 )
                 db.add(setting)
                 logger.info(f"Creating new recipient list with email {email}")
@@ -178,6 +217,7 @@ class EmailSettingsRepository:
     def remove_email_from_category(self, db: Session, category: str, email: str) -> bool:
         """Remove email from specific category - FIXED VERSION"""
         try:
+            self.migrate_legacy_email_notification_settings(db)
             setting_key = "opportunity_emails"
             
             setting = db.query(EmailNotificationSettings).filter(

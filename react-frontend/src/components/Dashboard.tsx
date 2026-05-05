@@ -1,20 +1,62 @@
 // components/Dashboard.tsx - Enhanced with processing information
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   FileText, Leaf, CreditCard, Globe, Play, AlertCircle, 
-  Bot, Cpu, Database, CheckCircle, Clock 
+  Bot, Cpu, Database, Clock, Loader2, Globe2, Search, Mail, CheckCircle2, X
 } from 'lucide-react';
 import { StatCard } from './StatCard';
 import { Stats, SystemStatus, Tender } from '../types';
+import { ExtractionPhase } from '../hooks/useApi';
 
 interface DashboardProps {
   stats: Stats;
   systemStatus: SystemStatus;
-  tenders: Tender[]; // Add tenders to show processing stats
+  tenders: Tender[];
   onTriggerExtraction: () => void;
+  isExtracting?: boolean;
+  extractionPhase?: ExtractionPhase | null;
+  extractionPhaseLabel?: string;
+  extractionProgress?: number;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tenders, onTriggerExtraction }) => {
+const PHASE_ICONS: Record<string, React.ReactNode> = {
+  crawling:  <Globe2   className="h-5 w-5" />,
+  screening: <Search   className="h-5 w-5" />,
+  details:   <Cpu      className="h-5 w-5" />,
+  email:     <Mail     className="h-5 w-5" />,
+  finishing: <CheckCircle2 className="h-5 w-5" />,
+};
+
+const PHASE_STEPS: { key: ExtractionPhase; label: string }[] = [
+  { key: 'crawling',  label: 'Crawl' },
+  { key: 'screening', label: 'Screen' },
+  { key: 'details',   label: 'Details' },
+  { key: 'email',     label: 'Email' },
+  { key: 'finishing', label: 'Done' },
+];
+
+export const Dashboard: React.FC<DashboardProps> = ({
+  stats,
+  systemStatus,
+  tenders,
+  onTriggerExtraction,
+  isExtracting = false,
+  extractionPhase = null,
+  extractionPhaseLabel = '',
+  extractionProgress = 0,
+}) => {
+  const [progressDismissed, setProgressDismissed] = useState(false);
+
+  // Re-show the panel automatically when a new extraction starts
+  const prevExtracting = React.useRef(false);
+  React.useEffect(() => {
+    if (isExtracting && !prevExtracting.current) {
+      setProgressDismissed(false);
+    }
+    prevExtracting.current = isExtracting;
+  }, [isExtracting]);
+
+  const showProgress = (isExtracting || extractionProgress === 100) && !progressDismissed;
   // Calculate processing statistics
   const processedTenders = tenders.filter(t => t.is_processed);
   const unprocessedTenders = tenders.filter(t => !t.is_processed);
@@ -59,22 +101,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tende
           title="Total Tenders"
           value={stats.total}
           icon={FileText}
-          color="bg-blue-500"
+          color="bg-primary-500"
           trend={`+${recentTenders.length} today`}
         />
         <StatCard
-          title="Passed Screening"
-          value={stats.passed}
+          title="Recommended match"
+          value={stats.recommended}
           icon={Leaf}
           color="bg-green-500"
-          trend={`${Math.round((stats.passed / stats.total * 100) || 0)}% of total`}
+          trend={`${Math.round((stats.recommended / stats.total * 100) || 0)}% of total`}
         />
         <StatCard
-          title="Failed Screening"
-          value={stats.failed}
+          title="Low match (1–2 criteria)"
+          value={stats.lowMatch}
           icon={CreditCard}
-          color="bg-purple-500"
-          trend={`${Math.round((stats.failed / stats.total * 100) || 0)}% of total`}
+          color="bg-amber-500"
+          trend={`${Math.round((stats.lowMatch / stats.total * 100) || 0)}% of total`}
         />
         <StatCard
           title="Active Pages"
@@ -90,10 +132,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tende
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Agent 1 (Extracted)</p>
-              <p className="text-2xl font-bold text-blue-600 mt-1">{stats.total}</p>
+              <p className="text-2xl font-bold text-primary-600 mt-1">{stats.total}</p>
               <p className="text-xs text-gray-500 mt-1">Basic tender info</p>
             </div>
-            <div className="p-3 rounded-full bg-blue-500">
+            <div className="p-3 rounded-full bg-primary-500">
               <Bot className="h-6 w-6 text-white" />
             </div>
           </div>
@@ -116,10 +158,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tende
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Agent 3 (Notified)</p>
-              <p className="text-2xl font-bold text-purple-600 mt-1">{notifiedTenders.length}</p>
+              <p className="text-2xl font-bold text-primary-600 mt-1">{notifiedTenders.length}</p>
               <p className="text-xs text-gray-500 mt-1">Email notifications sent</p>
             </div>
-            <div className="p-3 rounded-full bg-purple-500">
+            <div className="p-3 rounded-full bg-primary-500">
               <Database className="h-6 w-6 text-white" />
             </div>
           </div>
@@ -133,7 +175,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tende
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center space-x-4">
             <div className="flex items-center">
-              <div className="w-4 h-4 bg-blue-500 rounded-full mr-2"></div>
+              <div className="w-4 h-4 bg-primary-500 rounded-full mr-2"></div>
               <span className="text-sm text-gray-600">Agent 1: Extract & Categorize</span>
             </div>
             <div className="flex items-center">
@@ -141,7 +183,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tende
               <span className="text-sm text-gray-600">Agent 2: Detail Extraction</span>
             </div>
             <div className="flex items-center">
-              <div className="w-4 h-4 bg-purple-500 rounded-full mr-2"></div>
+              <div className="w-4 h-4 bg-primary-500 rounded-full mr-2"></div>
               <span className="text-sm text-gray-600">Agent 3: Email Composition</span>
             </div>
           </div>
@@ -161,11 +203,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tende
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-600">Email Notifications Sent</span>
-                <span className="font-medium text-purple-600">{notifiedTenders.length}</span>
+                <span className="font-medium text-primary-600">{notifiedTenders.length}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-600">Pending Notifications</span>
-                <span className="font-medium text-blue-600">{unnotifiedTenders.length}</span>
+                <span className="font-medium text-primary-600">{unnotifiedTenders.length}</span>
               </div>
             </div>
           </div>
@@ -193,7 +235,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tende
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2">
                   <div 
-                    className="bg-purple-500 h-2 rounded-full transition-all duration-300"
+                    className="bg-primary-500 h-2 rounded-full transition-all duration-300"
                     style={{ width: `${(notifiedTenders.length / stats.total * 100) || 0}%` }}
                   ></div>
                 </div>
@@ -203,18 +245,115 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tende
         </div>
       </div>
 
-      {/* Quick Actions */}
+      {/* Quick Actions + Live Extraction Progress */}
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-8">
         <h3 className="text-xl font-semibold text-gray-900 mb-6">Quick Actions</h3>
-        <div className="flex flex-wrap gap-4">
+        <div className="flex flex-wrap gap-4 mb-6">
           <button
             onClick={onTriggerExtraction}
-            className="flex items-center px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-base"
+            disabled={isExtracting}
+            className={`flex items-center px-6 py-3 rounded-lg font-medium text-base transition-all ${
+              isExtracting
+                ? 'bg-primary-400 text-white cursor-not-allowed opacity-80'
+                : 'bg-primary-600 text-white hover:bg-primary-700'
+            }`}
           >
-            <Play className="h-5 w-5 mr-3" />
-            Trigger Manual Extraction
+            {isExtracting ? (
+              <Loader2 className="h-5 w-5 mr-3 animate-spin" />
+            ) : (
+              <Play className="h-5 w-5 mr-3" />
+            )}
+            {isExtracting ? 'Extraction Running…' : 'Trigger Manual Extraction'}
           </button>
         </div>
+
+        {/* Live progress panel */}
+        {showProgress && (
+          <div className="mt-2 rounded-xl border border-primary-200 bg-primary-50 p-6 space-y-5">
+            {/* Header */}
+            <div className="flex items-start gap-3">
+              {isExtracting ? (
+                <Loader2 className="h-6 w-6 text-primary-600 animate-spin shrink-0 mt-0.5" />
+              ) : (
+                <CheckCircle2 className="h-6 w-6 text-green-500 shrink-0 mt-0.5" />
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-primary-800 text-base">
+                  {isExtracting
+                    ? (extractionPhaseLabel || 'Starting extraction…')
+                    : 'Extraction complete!'}
+                </p>
+                <p className="text-xs text-primary-500 mt-0.5">
+                  {isExtracting
+                    ? 'This may take 1–3 minutes depending on how many pages are monitored.'
+                    : `${stats.total} tender${stats.total !== 1 ? 's' : ''} found. You can close this panel.`}
+                </p>
+              </div>
+              <button
+                onClick={() => setProgressDismissed(true)}
+                className="shrink-0 p-1 rounded-md text-primary-400 hover:text-primary-700 hover:bg-primary-100 transition-colors"
+                title="Dismiss"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Indeterminate + determinate progress bar */}
+            <div className="relative w-full h-3 bg-primary-100 rounded-full overflow-hidden">
+              {/* Shimmer layer (always active) */}
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent animate-shimmer rounded-full" />
+              {/* Filled layer */}
+              <div
+                className="h-full bg-gradient-to-r from-primary-500 to-primary-400 rounded-full transition-all duration-700"
+                style={{ width: `${Math.max(4, extractionProgress)}%` }}
+              />
+            </div>
+
+            {/* Step indicators */}
+            <div className="flex items-center justify-between gap-1">
+              {PHASE_STEPS.map((step, idx) => {
+                const phaseOrder = PHASE_STEPS.findIndex(s => s.key === extractionPhase);
+                const isDone    = phaseOrder > idx;
+                const isActive  = phaseOrder === idx;
+                return (
+                  <div key={step.key} className="flex flex-col items-center gap-1 flex-1">
+                    <div
+                      className={`flex items-center justify-center w-8 h-8 rounded-full border-2 transition-all duration-300 ${
+                        isDone
+                          ? 'bg-primary-500 border-primary-500 text-white'
+                          : isActive
+                          ? 'bg-white border-primary-500 text-primary-600 shadow-sm shadow-primary-200'
+                          : 'bg-white border-gray-200 text-gray-300'
+                      }`}
+                    >
+                      {isDone ? (
+                        <CheckCircle2 className="h-4 w-4" />
+                      ) : isActive ? (
+                        <div className={`text-primary-600`}>{PHASE_ICONS[step.key]}</div>
+                      ) : (
+                        <span className="text-xs font-bold">{idx + 1}</span>
+                      )}
+                    </div>
+                    <span className={`text-xs font-medium ${
+                      isActive ? 'text-primary-700' : isDone ? 'text-primary-500' : 'text-gray-400'
+                    }`}>
+                      {step.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Live tender count */}
+            <p className="text-xs text-primary-600 text-center">
+              {isExtracting
+                ? (stats.total > 0
+                    ? `${stats.total} tender${stats.total !== 1 ? 's' : ''} found so far — updating live`
+                    : 'Scanning for new tenders…')
+                : `Done — ${stats.total} tender${stats.total !== 1 ? 's' : ''} in database`}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Recent Activity */}
@@ -226,11 +365,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, systemStatus, tende
               <div key={tender.id} className="flex items-center justify-between py-3 border-b border-gray-100 last:border-b-0">
                 <div className="flex items-center">
                   <div className={`w-3 h-3 rounded-full mr-4 ${
-                    tender.passes_screening ? 'bg-green-500' : 'bg-purple-500'
+                    tender.passes_screening ? 'bg-green-500' : 'bg-amber-500'
                   }`}></div>
                   <div>
                     <p className="text-sm font-medium text-gray-900">
-                      {tender.passes_screening ? 'Passed' : 'Failed'} screening
+                      {tender.passes_screening ? 'Recommended match' : 'Low match'}{' '}
+                      {typeof tender.screening_yes_count === 'number'
+                        ? `(${tender.screening_yes_count}/5)`
+                        : ''}
                     </p>
                     <p className="text-xs text-gray-500">{tender.title.substring(0, 60)}...</p>
                   </div>

@@ -39,9 +39,13 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
   const filteredKeywords = keywords.filter(keyword => filterCategory === 'all' || keyword.category === filterCategory);
 
   const getCategoryColor = (category: string) => {
-    return category === 'esg' 
-      ? 'bg-green-100 text-green-800' 
-      : 'bg-purple-100 text-purple-800';
+    const colors: Record<string, string> = {
+      sector: 'bg-emerald-100 text-emerald-800',
+      activity_fit: 'bg-primary-100 text-primary-800',
+      geography: 'bg-amber-100 text-amber-800',
+      source_tag: 'bg-violet-100 text-violet-800',
+    };
+    return colors[category] ?? 'bg-slate-100 text-slate-700';
   };
 
   const formatDate = (dateString: string) => {
@@ -62,7 +66,7 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
         <h2 className="text-2xl font-bold text-gray-900">Keyword Management</h2>
         <button
           onClick={() => setShowAddForm(true)}
-          className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          className="flex items-center px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
         >
           <Plus className="h-4 w-4 mr-2" />
           Add Keyword
@@ -86,9 +90,9 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-600">Activity Fit Keywords</p>
-              <p className="text-2xl font-bold text-purple-600 mt-1">{categoryBKeywords.length}</p>
+              <p className="text-2xl font-bold text-primary-600 mt-1">{categoryBKeywords.length}</p>
             </div>
-            <div className="p-3 rounded-full bg-purple-500">
+            <div className="p-3 rounded-full bg-primary-500">
               <Tag className="h-6 w-6 text-white" />
             </div>
           </div>
@@ -108,8 +112,8 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
                 type="text"
                 value={newKeyword.keyword}
                 onChange={(e) => setNewKeyword({ ...newKeyword, keyword: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="e.g., sustainability, carbon neutral"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                placeholder="e.g., off-grid energy, Ethiopia, USAID"
                 required
               />
             </div>
@@ -120,7 +124,7 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
               <select
                 value={newKeyword.category}
                     onChange={(e) => setNewKeyword({ ...newKeyword, category: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               >
                 <option value="sector">Sector</option>
                 <option value="activity_fit">Activity Fit</option>
@@ -131,7 +135,7 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
             <div className="flex gap-3">
               <button
                 type="submit"
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
               >
                 Add Keyword
               </button>
@@ -157,7 +161,7 @@ export const KeywordManager: React.FC<KeywordManagerProps> = ({ keywords, onRefr
           <select
             value={filterCategory}
             onChange={(e) => setFilterCategory(e.target.value)}
-            className="px-3 py-1 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="px-3 py-1 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
           >
             <option value="all">All Categories</option>
             <option value="sector">Sector</option>

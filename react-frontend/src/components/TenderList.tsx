@@ -28,6 +28,7 @@ import { apiService } from '../services/api';
 
 interface TenderListProps {
   tenders: Tender[];
+  onRefresh?: () => void | Promise<void>;
 }
 
 type ViewType = 'processed' | 'all' | 'active' | 'expired';
@@ -60,7 +61,7 @@ function formatDaysUntilDeadlineValue(dv: {
   };
 }
 
-export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
+export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) => {
   // State management
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<CategoryType>('all');
@@ -70,6 +71,38 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
   const [selectedTender, setSelectedTender] = useState<Tender | null>(null);
   const [detailedTender, setDetailedTender] = useState<Tender | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+
+  // Delete-confirmation modal state
+  const [tenderPendingDelete, setTenderPendingDelete] = useState<Tender | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const requestDelete = (tender: Tender) => {
+    setTenderPendingDelete(tender);
+    setDeleteError(null);
+  };
+
+  const cancelDelete = () => {
+    if (isDeleting) return;
+    setTenderPendingDelete(null);
+    setDeleteError(null);
+  };
+
+  const confirmDelete = async () => {
+    if (!tenderPendingDelete) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await apiService.deleteTender(tenderPendingDelete.id);
+      setTenderPendingDelete(null);
+      if (onRefresh) await onRefresh();
+    } catch (err) {
+      console.error('Failed to delete tender:', err);
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete tender');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Close modal on escape key
   useEffect(() => {
@@ -190,11 +223,26 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
     }
   };
 
-  const getCategoryColor = (passesScreening?: boolean) => {
-    if (passesScreening === true) return 'bg-emerald-100 text-emerald-800 border-emerald-200';
-    if (passesScreening === false) return 'bg-red-100 text-red-800 border-red-200';
-    return 'bg-gray-100 text-gray-800 border-gray-200';
+  const screeningYesFraction = (tender: Tender) =>
+    typeof tender.screening_yes_count === 'number'
+      ? `${tender.screening_yes_count}/5`
+      : '—';
+
+  const screeningBadgeClasses = (tender: Tender) => {
+    if (tender.passes_screening === true)
+      return 'bg-emerald-100 text-emerald-900 border-emerald-200';
+    return 'bg-amber-50 text-amber-900 border-amber-300';
   };
+
+  const screeningBadgeLabel = (tender: Tender) =>
+    tender.passes_screening === true
+      ? `Recommended · ${screeningYesFraction(tender)}`
+      : `Low match · ${screeningYesFraction(tender)}`;
+
+  const screeningCardAccent = (tender: Tender) =>
+    tender.passes_screening === true
+      ? 'border-l-[6px] border-emerald-500'
+      : 'border-l-[6px] border-amber-400 bg-amber-50/40';
 
   const getUrgencyDisplay = (tender: Tender) => {
     const dateValidation = tender.detailed_info?.date_validation;
@@ -305,7 +353,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                   view.id === 'active'
                     ? 'bg-emerald-600 text-white shadow-md ring-2 ring-emerald-300 border-transparent'
                     : view.id === 'processed'
-                      ? 'bg-blue-600 text-white shadow-md border-transparent'
+                      ? 'bg-primary-600 text-white shadow-md border-transparent'
                       : view.id === 'all'
                         ? 'bg-slate-700 text-white shadow-md border-transparent'
                         : 'bg-red-600 text-white shadow-md ring-2 ring-red-400 border-transparent';
@@ -314,7 +362,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                   view.id === 'active'
                     ? 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
                     : view.id === 'processed'
-                      ? 'bg-blue-50 text-blue-900 border-blue-200 hover:bg-blue-100'
+                      ? 'bg-primary-50 text-primary-900 border-primary-200 hover:bg-primary-100'
                       : view.id === 'all'
                         ? 'bg-gray-100 text-gray-800 border-gray-200 hover:bg-gray-200'
                         : 'bg-red-50 text-red-900 border-red-200 hover:bg-red-100';
@@ -343,7 +391,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                   placeholder="Search tenders by title or description..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                  className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
                 />
               </div>
               
@@ -353,18 +401,18 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                   <select
                     value={selectedCategory}
                     onChange={(e) => setSelectedCategory(e.target.value as CategoryType)}
-                    className="pl-10 pr-8 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none bg-white min-w-[140px]"
+                    className="pl-10 pr-8 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white min-w-[140px]"
                   >
-                    <option value="all">All Categories</option>
-                    <option value="passed">Passed</option>
-                    <option value="failed">Failed</option>
+                    <option value="all">All screening tiers</option>
+                    <option value="passed">Recommended (≥3/5)</option>
+                    <option value="failed">Low match (1–2/5)</option>
                   </select>
                 </div>
                 
                 <select
                   value={sortBy}
                   onChange={(e) => setSortBy(e.target.value as SortType)}
-                  className="px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none bg-white min-w-[120px]"
+                  className="px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white min-w-[120px]"
                 >
                   <option value="newest">Newest First</option>
                   <option value="oldest">Oldest First</option>
@@ -382,7 +430,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                   : selectedView === 'active'
                     ? 'bg-emerald-50 border-emerald-200'
                     : selectedView === 'processed'
-                      ? 'bg-blue-50 border-blue-200'
+                      ? 'bg-primary-50 border-primary-200'
                       : 'bg-slate-50 border-slate-200'
               }`}
             >
@@ -393,7 +441,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                     : selectedView === 'active'
                       ? 'text-emerald-900'
                       : selectedView === 'processed'
-                        ? 'text-blue-900'
+                        ? 'text-primary-900'
                         : 'text-slate-800'
                 }`}
               >
@@ -401,6 +449,12 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                 {selectedView === 'all' && "Showing all tenders extracted by Agent 1, including unprocessed ones."}
                 {selectedView === 'active' && "Showing only tenders with active deadlines (not expired)."}
                 {selectedView === 'expired' && "Showing tenders with expired deadlines or old publication dates."}
+                {selectedCategory === 'passed' && (
+                  <span className="block mt-2 font-medium">Category filter: recommended matches only (≥3 of 5 Step 1 criteria).</span>
+                )}
+                {selectedCategory === 'failed' && (
+                  <span className="block mt-2 font-medium">Category filter: low matches only (1–2 of 5 criteria — still shortlisted for visibility).</span>
+                )}
               </p>
             </div>
           </div>
@@ -419,26 +473,26 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                   setSelectedCategory('all');
                   setSelectedView('all');
                 }}
-                className="text-blue-600 hover:text-blue-700 font-medium"
+                className="text-primary-600 hover:text-primary-700 font-medium"
               >
                 Clear all filters
               </button>
             </div>
           ) : (
             filteredTenders.map((tender) => (
-              <div key={tender.id} className="bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-lg transition-all duration-200 group">
+              <div key={tender.id} className={`rounded-xl shadow-sm border border-gray-200 hover:shadow-lg transition-all duration-200 group bg-white ${screeningCardAccent(tender)}`}>
                 <div className="p-6">
                   <div className="flex items-start justify-between">
                     <div className="flex-1 min-w-0">
                       {/* Header */}
                       <div className="flex items-start gap-3 mb-3">
-                        <h3 className="text-lg font-semibold text-gray-900 group-hover:text-blue-600 transition-colors flex-1 min-w-0">
+                        <h3 className="text-lg font-semibold text-gray-900 group-hover:text-primary-600 transition-colors flex-1 min-w-0">
                           {tender.title}
                         </h3>
                         <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className={`px-3 py-1 rounded-full text-xs font-medium border ${getCategoryColor(tender.passes_screening)}`}>
+                          <span className={`px-3 py-1 rounded-full text-xs font-medium border ${screeningBadgeClasses(tender)}`}>
                             <Tag className="h-3 w-3 inline mr-1" />
-                            {tender.passes_screening ? 'Passed' : 'Failed'}
+                            {screeningBadgeLabel(tender)}
                           </span>
                         </div>
                       </div>
@@ -460,7 +514,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                         {getUrgencyDisplay(tender)}
                         
                         {tender.is_notified && (
-                          <span className="inline-flex items-center text-xs text-blue-700 bg-blue-100 px-2 py-1 rounded-full border border-blue-200">
+                          <span className="inline-flex items-center text-xs text-primary-700 bg-primary-100 px-2 py-1 rounded-full border border-primary-200">
                             <CheckCircle className="h-3 w-3 mr-1" />
                             Notified
                           </span>
@@ -499,7 +553,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                           {tender.is_processed && (
                             <button
                               onClick={() => openModal(tender)}
-                              className="inline-flex items-center px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                              className="inline-flex items-center px-3 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors text-sm font-medium"
                             >
                               <Eye className="h-4 w-4 mr-1" />
                               View Details
@@ -509,11 +563,18 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                             href={tender.url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center p-2 text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors"
+                            className="inline-flex items-center p-2 text-primary-600 hover:text-primary-700 hover:bg-primary-50 rounded-lg transition-colors"
                             title="Open original tender"
                           >
                             <ExternalLink className="h-4 w-4" />
                           </a>
+                          <button
+                            onClick={() => requestDelete(tender)}
+                            className="inline-flex items-center p-2 text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Delete tender"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -563,9 +624,9 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                     </h3>
                     {selectedTender && (
                       <div className="flex items-center gap-3 mt-2 flex-wrap">
-                        <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getCategoryColor(selectedTender.passes_screening)}`}>
+                        <span className={`px-3 py-1 rounded-full text-sm font-medium border ${screeningBadgeClasses(selectedTender)}`}>
                           <Tag className="h-4 w-4 inline mr-1" />
-                          {selectedTender.passes_screening ? 'Passed screening' : 'Did not pass'}
+                          {screeningBadgeLabel(selectedTender)}
                         </span>
                         {detailedTender?.detailed_info?.deadline && (
                           <span className="flex items-center text-sm text-gray-600">
@@ -590,19 +651,19 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
               <div className="bg-white px-6 py-6 max-h-[70vh] overflow-y-auto">
                 {loadingDetails ? (
                   <div className="flex items-center justify-center py-12">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
                     <span className="ml-3 text-gray-600">Loading detailed information...</span>
                   </div>
                 ) : detailedTender ? (
                   <div className="space-y-6">
                     {/* Key Details Grid */}
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                      <div className="bg-primary-50 p-4 rounded-lg border border-primary-200">
                         <div className="flex items-center mb-2">
-                          <Building className="h-5 w-5 text-blue-600 mr-2" />
-                          <span className="font-semibold text-blue-900">Organization</span>
+                          <Building className="h-5 w-5 text-primary-600 mr-2" />
+                          <span className="font-semibold text-primary-900">Organization</span>
                         </div>
-                        <p className="text-blue-800 text-sm">
+                        <p className="text-primary-800 text-sm">
                           {(() => {
                             const contactInfo = parseContactInfo(detailedTender.detailed_info?.contact_info);
                             return contactInfo.organization || 'Not specified';
@@ -620,12 +681,12 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                         </p>
                       </div>
                       
-                      <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                      <div className="bg-primary-50 p-4 rounded-lg border border-primary-200">
                         <div className="flex items-center mb-2">
-                          <Clock className="h-5 w-5 text-purple-600 mr-2" />
-                          <span className="font-semibold text-purple-900">Duration</span>
+                          <Clock className="h-5 w-5 text-primary-600 mr-2" />
+                          <span className="font-semibold text-primary-900">Duration</span>
                         </div>
-                        <p className="text-purple-800 text-sm">
+                        <p className="text-primary-800 text-sm">
                           {detailedTender.detailed_info?.duration || 'Not specified'}
                         </p>
                       </div>
@@ -666,8 +727,8 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                     )}
 
                     {/* Contact Information */}
-                    <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                      <h4 className="text-lg font-semibold text-blue-900 mb-3 flex items-center">
+                    <div className="bg-primary-50 p-4 rounded-lg border border-primary-200">
+                      <h4 className="text-lg font-semibold text-primary-900 mb-3 flex items-center">
                         <User className="h-5 w-5 mr-2" />
                         Contact Information
                       </h4>
@@ -680,29 +741,29 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                           return (
                             <>
                               <div className="flex items-center">
-                                <User className="h-4 w-4 text-blue-600 mr-2 flex-shrink-0" />
-                                <span className="text-blue-800 text-sm">{contactPerson}</span>
+                                <User className="h-4 w-4 text-primary-600 mr-2 flex-shrink-0" />
+                                <span className="text-primary-800 text-sm">{contactPerson}</span>
                               </div>
                               <div className="flex items-center col-span-1 md:col-span-2">
-                                <Mail className="h-4 w-4 text-blue-600 mr-2 flex-shrink-0" />
+                                <Mail className="h-4 w-4 text-primary-600 mr-2 flex-shrink-0" />
                                 {contactInfo.email ? (
-                                  <a href={`mailto:${contactInfo.email}`} className="text-blue-600 hover:underline text-sm">
+                                  <a href={`mailto:${contactInfo.email}`} className="text-primary-600 hover:underline text-sm">
                                     {contactInfo.email}
                                   </a>
                                 ) : (
-                                  <span className="text-blue-800 text-sm">{contactEmail}</span>
+                                  <span className="text-primary-800 text-sm">{contactEmail}</span>
                                 )}
                               </div>
                               {contactInfo.phone && (
                                 <div className="flex items-center">
-                                  <Phone className="h-4 w-4 text-blue-600 mr-2 flex-shrink-0" />
-                                  <span className="text-blue-800 text-sm">{contactInfo.phone}</span>
+                                  <Phone className="h-4 w-4 text-primary-600 mr-2 flex-shrink-0" />
+                                  <span className="text-primary-800 text-sm">{contactInfo.phone}</span>
                                 </div>
                               )}
                               {contactInfo.address && (
                                 <div className="flex items-start col-span-1 md:col-span-2">
-                                  <MapPin className="h-4 w-4 text-blue-600 mr-2 mt-0.5 flex-shrink-0" />
-                                  <span className="text-blue-800 text-sm">{contactInfo.address}</span>
+                                  <MapPin className="h-4 w-4 text-primary-600 mr-2 mt-0.5 flex-shrink-0" />
+                                  <span className="text-primary-800 text-sm">{contactInfo.address}</span>
                                 </div>
                               )}
                             </>
@@ -739,12 +800,12 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
 
                     {/* Evaluation Criteria */}
                     {detailedTender.detailed_info?.evaluation_criteria && (
-                      <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-200">
-                        <h4 className="text-lg font-semibold text-indigo-900 mb-3 flex items-center">
+                      <div className="bg-primary-50 p-4 rounded-lg border border-primary-200">
+                        <h4 className="text-lg font-semibold text-primary-900 mb-3 flex items-center">
                           <CheckCircle className="h-5 w-5 mr-2" />
                           Evaluation Criteria
                         </h4>
-                        <p className="text-indigo-800 leading-relaxed text-sm">
+                        <p className="text-primary-800 leading-relaxed text-sm">
                           {detailedTender.detailed_info.evaluation_criteria}
                         </p>
                       </div>
@@ -817,7 +878,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                       href={selectedTender.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                      className="inline-flex items-center px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
                     >
                       <ExternalLink className="h-4 w-4 mr-2" />
                       View Original
@@ -825,6 +886,76 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders }) => {
                   )}
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation modal */}
+      {tenderPendingDelete && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4"
+          onClick={cancelDelete}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 animate-fade-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-4">
+              <div className="shrink-0 w-12 h-12 rounded-full bg-red-50 flex items-center justify-center">
+                <AlertTriangle className="h-6 w-6 text-red-600" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-lg font-semibold text-gray-900">Delete this tender?</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  This permanently removes the tender and its detailed information from the database. This action cannot be undone.
+                </p>
+                <div className="mt-3 p-3 rounded-lg bg-gray-50 border border-gray-200">
+                  <p className="text-sm font-medium text-gray-800 line-clamp-2">
+                    {tenderPendingDelete.title}
+                  </p>
+                  {tenderPendingDelete.page_name && (
+                    <p className="text-xs text-gray-500 mt-1 flex items-center">
+                      <Building className="h-3 w-3 mr-1" />
+                      {tenderPendingDelete.page_name}
+                    </p>
+                  )}
+                </div>
+                {deleteError && (
+                  <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+                    {deleteError}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-3 mt-6">
+              <button
+                onClick={cancelDelete}
+                disabled={isDeleting}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={isDeleting}
+                className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {isDeleting ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4 mr-2" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+                      <path fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" className="opacity-75" />
+                    </svg>
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

@@ -1,9 +1,14 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import App from './App';
+import { LoginPage } from './components/LoginPage';
 
-test('renders learn react link', () => {
-  render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+jest.mock('./services/api', () => ({
+  apiService: { login: jest.fn() },
+  setAuthToken: jest.fn(),
+}));
+
+test('renders Precise tender monitoring branding on login', () => {
+  render(<LoginPage onLoginSuccess={() => {}} />);
+  expect(screen.getByText(/^Precise$/i)).toBeInTheDocument();
+  expect(screen.getByText(/Tender monitoring/i)).toBeInTheDocument();
 });

@@ -18,7 +18,7 @@ class EmailNotificationSettings(Base):
 
     Schema:
         - id (int): Primary key for unique identification.
-        - setting_key (str): Name/key describing this setting ('esg_emails', 'credit_emails', 'preferences', ...),
+        - setting_key (str): Name/key describing this setting ('opportunity_emails', 'preferences', ...),
           must be unique.
         - setting_value (json): Value of this setting, may be an array (e.g. emails) or an object
           (e.g. preferences dict).
@@ -33,7 +33,7 @@ class EmailNotificationSettings(Base):
     __tablename__ = "email_notification_settings"
     
     id = Column(Integer, primary_key=True, index=True)
-    setting_key = Column(String(100), nullable=False, unique=True, index=True)  # 'esg_emails', 'credit_emails', 'preferences'
+    setting_key = Column(String(100), nullable=False, unique=True, index=True)  # 'opportunity_emails', 'preferences'
     setting_value = Column(JSON, nullable=False)  # JSON array (for emails) or object (for preferences)
     description = Column(Text, nullable=True)  # Human-readable explanation
     
@@ -54,8 +54,7 @@ class EmailNotificationLog(Base):
         - id (int): Primary key for unique identification.
         - recipient_email (str): Target email address.
         - email_type (str): Nature of the email ('new_tender', 'daily_summary', 'test', etc.)
-        - team_category (str): Category of the team/notification
-          (e.g., 'esg', 'credit_rating').
+        - team_category (str): Notification stream (e.g. 'screening_opportunities').
         - subject (str): Subject line of the email (may be null if failed early).
         - status (str): Delivery result ('sent', 'failed', 'pending', etc.).
         - error_message (str): Text describing error, if any (optional).
@@ -74,7 +73,7 @@ class EmailNotificationLog(Base):
     id = Column(Integer, primary_key=True, index=True)
     recipient_email = Column(String(255), nullable=False, index=True)
     email_type = Column(String(50), nullable=False, index=True)  # 'new_tender', 'daily_summary', 'test', etc.
-    team_category = Column(String(50), nullable=False, index=True)  # 'esg', 'credit_rating'
+    team_category = Column(String(50), nullable=False, index=True)  # e.g. screening_opportunities
     subject = Column(String(500), nullable=True)
     status = Column(String(50), nullable=False, index=True)  # 'sent', 'failed', 'pending'
     error_message = Column(Text, nullable=True)

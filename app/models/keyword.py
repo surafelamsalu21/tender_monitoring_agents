@@ -15,7 +15,7 @@ class Keyword(Base):
     Attributes:
         id (int): Primary key identifier for the keyword.
         keyword (str): The keyword string (max length 100, indexed).
-        category (str): The category this keyword applies to (e.g., "esg" or "credit_rating").
+        category (str): The category this keyword applies to (sector, activity_fit, geography, source_tag).
         description (str): Optional detailed description for the keyword.
         is_active (bool): Flag to indicate if the keyword is currently enabled/used.
         case_sensitive (bool): Whether keyword matching is case sensitive for this keyword.
@@ -32,7 +32,7 @@ class Keyword(Base):
     # ---------- Columns (Schema) ----------
     id = Column(Integer, primary_key=True, index=True)  # Unique identifier
     keyword = Column(String(100), nullable=False, index=True)  # The keyword value itself
-    category = Column(String(50), nullable=False, index=True)  # e.g., 'esg', 'credit_rating'
+    category = Column(String(50), nullable=False, index=True)  # sector, activity_fit, geography, source_tag
     description = Column(String(500), nullable=True)  # Optional textual description
     
     # ---------- Settings ----------
@@ -64,7 +64,7 @@ class Keyword(Base):
         String representation for debugging/logging.
 
         Example:
-            <Keyword(id=1, keyword='ESG', category='esg', usage=12)>
+            <Keyword(id=1, keyword='Ethiopia', category='geography', usage=12)>
         """
         return f"<Keyword(id={self.id}, keyword='{self.keyword}', category='{self.category}', usage={self.usage_count})>"
     
@@ -88,7 +88,7 @@ class Keyword(Base):
 # 
 # - Structure:
 #   - Each Keyword has a string value (`keyword`), belongs to a `category` (such as
-#     "esg" or "credit_rating"), and may have an optional `description`.
+#     sector, activity_fit, geography, source_tag), and may have an optional `description`.
 #   - The `is_active` flag allows enabling/disabling keywords without deletion.
 #   - `case_sensitive` controls whether keyword matching should distinguish case.
 # 

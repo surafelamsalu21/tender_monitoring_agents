@@ -6,14 +6,14 @@ An AI-powered tender monitoring system that automatically scrapes, categorizes, 
 
 - 🕷️ **Web Scraping**: Uses `crawl4ai` to scrape tender pages efficiently.
 - 🤖 **AI Agents (Multi-Agent Workflow)**: Employs a sophisticated three-agent pipeline powered by Langchain and LangGraph for intelligent processing:
-    - **Agent 1 (Extraction Agent)**: Extracts basic tender information from scraped content, categorizes tenders strictly as "ESG" or "Credit Rating" based on keywords (no "both" category), and performs initial date filtering.
+    - **Agent 1 (Screening extraction)**: Applies the Precise **screening checklist** (Steps 1–3), keeps opportunities that pass the Step 1 relevance rule (≥ 3 of 5 YES), and persists screening metadata.
     - **Agent 2 (Detail Agent)**: Scrapes individual tender pages for non-duplicate, filtered tenders, extracts comprehensive details, and validates dates, skipping expired or old items.
-    - **Agent 3 (Email Composer Agent)**: Generates rich, detailed HTML email notifications (individual or digest format) for successfully processed tenders.
-- 📊 **Targeted Categorization**: Automatically categorizes tenders for ESG (Environmental, Social, Governance) and Credit Rating teams using configurable keywords.
-- 📧 **Rich Email Notifications**: Sends professional, HTML-formatted email notifications, including individual alerts or daily/weekly digests, composed by Agent 3.
+    - **Agent 3 (Email Composer Agent)**: Generates rich HTML notifications for successfully processed opportunities (screening-aligned).
+- 📊 **Checklist-aligned keywords**: Keyword Manager uses **sector**, **activity_fit**, **geography**, and **source_tag** to support matching and reporting.
+- 📧 **Rich Email Notifications**: Sends HTML notifications to a single **opportunity screening** recipient list configured in Settings.
 - ⏰ **Scheduled Monitoring**: Runs periodically (configurable, default: every 3 hours) to check for new tenders.
 - 💾 **Database Management**: Utilizes SQLAlchemy for robust interaction with a database (SQLite by default) to store and manage all system data.
-- 🎯 **Keyword Management**: Allows configuration of keywords for each team (ESG, Credit Rating) via the web dashboard.
+- 🎯 **Keyword Management**: Configure checklist-aligned keywords (**sector**, **activity_fit**, **geography**, **source_tag**) via the dashboard.
 - 🖥️ **Web Dashboard**: A React-based frontend application provides a user interface for:
     - Managing monitored pages and keywords.
     - Viewing extracted tenders and their details.
@@ -62,10 +62,10 @@ graph TD
 
 1.  **Scheduling**: The `TenderScheduler` periodically triggers the scraping process.
 2.  **Scraping**: `TenderScraper` (using `crawl4ai`) fetches content from monitored web pages.
-3.  **Agent 1 (Extraction)**: Processes scraped content, extracts basic tender info, categorizes it (ESG/Credit Rating), and filters by date. Duplicates are checked and filtered. Basic info is saved to the primary database (DB1 - `tenders` table).
+3.  **Agent 1 (Screening extraction)**: Parses scraped content against the screening checklist, extracts opportunities that pass Step 1, and saves basic rows (including screening JSON). Duplicates are filtered.
 4.  **Agent 2 (Detail Enrichment)**: For new, valid tenders, this agent scrapes the individual tender URL, extracts detailed information (requirements, full description, contact info, etc.), and performs further date validation. Detailed info is saved to a secondary database (DB2 - `detailed_tenders` table).
 5.  **Agent 3 (Email Composition)**: Composes professional HTML emails (individual or digest) for tenders successfully processed by Agent 2.
-6.  **Notification**: The `EnhancedEmailService` sends these composed emails to the relevant teams. Fallback notifications are sent if Agent 3 encounters issues.
+6.  **Notification**: The `EnhancedEmailService` sends composed emails to recipients on the **opportunity screening** list. Fallback notifications use the same list.
 7.  **User Interaction**: Users interact with the system via the React Web Dashboard to manage pages, keywords, view tenders, and adjust settings.
 
 ## Installation
@@ -92,8 +92,8 @@ graph TD
     GEMINI_API_KEY=your_gemini_api_key # If used by any agent
     EMAIL_USER=your_email@example.com
     EMAIL_PASSWORD=your_email_app_password
-    ESG_TEAM_EMAIL=esg-team@example.com
-    CREDIT_RATING_TEAM_EMAIL=credit-team@example.com
+    SCREENING_DEFAULT_TEST_EMAIL=you@example.com
+    # Legacy alias still accepted: ESG_TEAM_EMAIL (same purpose as SCREENING_DEFAULT_TEST_EMAIL)
     DATABASE_URL=sqlite:///./tender_monitoring.db # Or your PostgreSQL/MySQL URL
     # Add any other necessary environment variables from app/core/config.py
     ```
@@ -135,40 +135,36 @@ graph TD
 
 ### Default Keywords
 
-Initial keywords are typically configured via the Web Dashboard or direct database entries. Examples:
-
--   **ESG Keywords**: environmental, sustainability, green, carbon, climate, renewable, esg, social responsibility, governance, sustainable development, environmental impact.
--   **Credit Rating Keywords**: credit rating, financial assessment, risk evaluation, credit analysis, rating agency, financial review, creditworthiness, financial audit, risk assessment.
+Default seeds use checklist-aligned categories (**sector**, **activity_fit**, **geography**, **source_tag**). See `app/core/init_data.py` and extend via the Keyword Manager.
 
 ### Email Configuration
 
--   Ensure your `EMAIL_USER` and `EMAIL_PASSWORD` in the `.env` file are correctly set up for your email provider (e.g., Gmail App Password).
--   Team email addresses (`ESG_TEAM_EMAIL`, `CREDIT_RATING_TEAM_EMAIL`) are also configured in the `.env` file and can be managed via the Settings page on the dashboard.
+-   Ensure `EMAIL_USER` and `EMAIL_PASSWORD` in `.env` match your SMTP provider (e.g. Gmail App Password).
+-   Optional **`SCREENING_DEFAULT_TEST_EMAIL`**: default recipient for dev-only email smoke tests (legacy **`ESG_TEAM_EMAIL`** is still read as an alias).
+-   Production recipients are stored in the database as **`opportunity_emails`** and managed under **Settings → Email Notifications** in the dashboard.
 
 ## Database Schema
 
 The system uses SQLAlchemy and defines the following main tables:
 
 -   **`monitored_pages`**: Stores URLs and settings for pages to be scraped.
--   **`keywords`**: Manages keywords used for categorization, including their category (ESG/Credit Rating) and usage statistics.
--   **`tenders`**: Stores basic information about extracted tenders (title, URL, initial category, basic description, link to page). This is the primary output of Agent 1.
--   **`detailed_tenders`**: Stores comprehensive information for tenders processed by Agent 2 (full descriptions, requirements, contact details, validated dates, etc.). Linked one-to-one with the `tenders` table.
+-   **`keywords`**: Keywords by category (**sector**, **activity_fit**, **geography**, **source_tag**) and usage statistics.
+-   **`tenders`**: Basic extracted opportunities, screening JSON (Steps 1–3), and links to source pages.
+-   **`detailed_tenders`**: Comprehensive information for tenders processed by Agent 2 (full descriptions, requirements, contact details, validated dates, etc.). Linked one-to-one with the `tenders` table.
 -   **`tender_keywords`**: An association table linking tenders to the keywords they matched.
 -   **`crawl_logs`**: Logs each scraping attempt, its status, tenders found, and errors.
--   **`email_notification_settings`**: Stores settings for email notifications, such as recipient lists for different categories and notification preferences.
--   **`email_notification_logs`**: Records all email notifications sent by the system, including status and any errors.
+-   **`email_notification_settings`**: Recipient list (`opportunity_emails`), preferences, and related config keys.
+-   **`email_notification_logs`**: Records notification attempts, including status and errors.
 
 ## AI Agent Workflow
 
 The core AI processing is handled by a three-agent pipeline:
 
-1.  **Agent 1 (TenderExtractionAgent)**:
-    -   Receives raw HTML/markdown content from the scraper.
-    -   Uses an LLM to identify and extract potential tender listings.
-    -   Translates content to English if necessary.
-    -   Categorizes each tender strictly as "ESG" or "Credit Rating" based on keyword matching (prioritizing the category with more keyword hits if both apply).
-    -   Performs initial date filtering to discard very old tenders.
-    -   Outputs structured basic tender data.
+1.  **Agent 1 (`TenderExtractionAgent` in `app/agents/agent1.py`; exported as `ScreeningExtractionAgent` for compatibility)**:
+    -   Receives markdown/content from the scraper.
+    -   Applies the Precise screening checklist (Steps 1–3) via the LLM.
+    -   Keeps opportunities that pass Step 1 (≥ 3 of 5 YES) unless configured otherwise.
+    -   Outputs structured tender rows with `screening` metadata.
 
 2.  **Agent 2 (TenderDetailAgent)**:
     -   Takes valid, non-duplicate tenders from Agent 1.
@@ -179,15 +175,14 @@ The core AI processing is handled by a three-agent pipeline:
 
 3.  **Agent 3 (EmailComposerAgent)**:
     -   Receives successfully processed tenders with detailed information from Agent 2.
-    -   Uses an LLM to compose professional, rich HTML email notifications.
-    -   Can generate individual emails for high-priority tenders or digest emails summarizing multiple opportunities.
-    -   Tailors content for the specific target team (ESG or Credit Rating).
+    -   Uses an LLM to compose professional, rich HTML email notifications for the **screening_opportunities** stream.
+    -   Can generate individual emails or digest-style summaries.
 
 ## Email Notifications
 
 -   Emails are composed by **Agent 3**, ensuring they are detailed and well-formatted.
 -   Supports both individual tender alerts and digest emails (e.g., daily summary).
--   Includes key information such as title, category, deadline, description, and a direct link to the original tender.
+-   Includes key information such as title, screening summary, deadline, description, and a direct link to the original tender.
 -   Notifications are sent only for new, unnotified tenders.
 -   The system marks tenders as notified to prevent duplicate alerts.
 
@@ -251,7 +246,7 @@ keyword_repo = KeywordRepository()
 new_keyword = keyword_repo.create_keyword(
     db=db,
     keyword="carbon footprint",
-    category="esg",
+    category="sector",
     description="Relates to carbon emissions and environmental impact"
 )
 print(f"Added keyword: {new_keyword.keyword}")

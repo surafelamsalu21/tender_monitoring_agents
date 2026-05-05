@@ -11,6 +11,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 import asyncio
 
+from app.agents.screening_prompt import PRECISE_SCREENING_CHECKLIST_MARKDOWN
 from app.core.config import settings
 from app.services.scraper import TenderScraper
 
@@ -20,8 +21,8 @@ class AgentState(TypedDict):
     """State shared between agents"""
     page_url: str
     page_content: str
-    keywords_esg: List[str]
-    keywords_credit: List[str]
+    sector_activity_keywords: List[str]
+    geography_source_keywords: List[str]
     categorized_tenders: List[Dict[str, Any]]
     detailed_tenders: List[Dict[str, Any]]
     error: str
@@ -60,27 +61,14 @@ class TenderAgent:
             # Log page content length only (avoid Unicode issues)
             logger.info(f"Total page content length: {len(state['page_content'])} characters")
             
-            system_prompt = """You are an opportunity screening specialist.
-Purpose: identify and shortlist relevant opportunities for further review.
+            system_prompt = (
+                "You are an opportunity screening specialist.\n\n"
+                + PRECISE_SCREENING_CHECKLIST_MARKDOWN
+                + """
 
-Apply this Screening Checklist:
-Step 1: Quick Relevance Filter (Yes/No)
-- mission_alignment
-- sector_relevance
-- activity_fit
-- geographic_fit
-- eligibility_quick_check
-Keep opportunity ONLY if yes_count >= 3.
-
-Step 2: Quick Flags (non-blocking tags only)
-- opportunity_characteristics
-- strategic_signals
-- potential_concerns
-
-Step 3: Basic Information Capture
-- title, source, country, type, deadline, estimated_budget, link
-
-Always respond in ENGLISH.
+=== Machine output rule ===
+Include opportunities with yes_count 1–5. Omit only if yes_count is 0 or unrelated_to_precise_scope is true.
+Set passes_filter true only when yes_count >= 3.
 
 Return ONLY a valid JSON array:
 [
@@ -92,6 +80,7 @@ Return ONLY a valid JSON array:
     "description": "brief description (IN ENGLISH)",
     "matched_keywords": ["optional_signal_or_keyword"],
     "screening": {
+      "unrelated_to_precise_scope": false,
       "step1": {
         "mission_alignment": true,
         "sector_relevance": true,
@@ -101,6 +90,7 @@ Return ONLY a valid JSON array:
       },
       "yes_count": 0,
       "passes_filter": true,
+      "source_language": "optional: fr|ar|am|pt|sw|en|mixed|unknown for dominant notice language",
       "step2": {
         "opportunity_characteristics": [],
         "strategic_signals": [],
@@ -119,18 +109,21 @@ Return ONLY a valid JSON array:
   }
 ]
 
-CRITICAL: Only include opportunities that pass Step 1 with yes_count >= 3. If none pass, return [].
-IMPORTANT: Your response must be ONLY valid JSON, no additional text. ALL TEXT FIELDS MUST BE IN ENGLISH."""
+CRITICAL: Do not omit low-match rows (1–2 YES) — only omit 0/5 or unrelated noise.
+IMPORTANT: Your response must be ONLY valid JSON, no additional text. ALL TEXT FIELDS MUST BE IN ENGLISH.
+CONTENT may be in any language: interpret meaning in the source language, then OUTPUT English summaries only (see checklist Multilingual sources). Optionally set screening.source_language for non-English/mixed substantive notices."""
+            )
 
             user_prompt = f"""
 Page URL: {state['page_url']}
-Signal Keywords A (optional hints): {', '.join(state['keywords_esg'])}
-Signal Keywords B (optional hints): {', '.join(state['keywords_credit'])}
+Sector / activity keyword hints (optional): {', '.join(state['sector_activity_keywords'])}
+Geography / source keyword hints (optional): {', '.join(state['geography_source_keywords'])}
 
 Page Content:
 {state['page_content']}
 
-Apply the full 3-step Screening Checklist. Keep only opportunities with yes_count >= 3. Return ONLY valid JSON."""
+Apply the full 3-step Screening Checklist. Include low-match rows (1–2 YES); omit only 0/5 or unrelated. Return ONLY valid JSON.
+If CONTENT is not in English, infer meaning from the source language and OUTPUT English string fields only; optionally set screening.source_language."""
 
             messages = [
                 SystemMessage(content=system_prompt),
@@ -164,7 +157,12 @@ Apply the full 3-step Screening Checklist. Keep only opportunities with yes_coun
                 logger.error(f"Raw response: {response.content}")
                 
                 # Fallback extraction using regex
-                tenders = self.fallback_extraction(state['page_content'], state['page_url'], state['keywords_esg'], state['keywords_credit'])
+                tenders = self.fallback_extraction(
+                    state['page_content'],
+                    state['page_url'],
+                    state['sector_activity_keywords'],
+                    state['geography_source_keywords'],
+                )
                 state['categorized_tenders'] = tenders
                 logger.info(f"Agent 1: Fallback extraction found {len(tenders)} tenders")
             
@@ -175,7 +173,13 @@ Apply the full 3-step Screening Checklist. Keep only opportunities with yes_coun
         
         return state
     
-    def fallback_extraction(self, content: str, page_url: str, esg_keywords: List[str], credit_keywords: List[str]) -> List[Dict[str, Any]]:
+    def fallback_extraction(
+        self,
+        content: str,
+        page_url: str,
+        sector_activity_keywords: List[str],
+        geography_source_keywords: List[str],
+    ) -> List[Dict[str, Any]]:
         """Fallback extraction using regex patterns"""
         import re
         from datetime import datetime
@@ -183,7 +187,7 @@ Apply the full 3-step Screening Checklist. Keep only opportunities with yes_coun
         tenders = []
         
         # Combine all keywords for matching
-        all_keywords = esg_keywords + credit_keywords
+        all_keywords = sector_activity_keywords + geography_source_keywords
         
         # Look for tender-like patterns that contain keywords
         content_lower = content.lower()
@@ -196,15 +200,11 @@ Apply the full 3-step Screening Checklist. Keep only opportunities with yes_coun
         
         if found_keywords:
             # Simple extraction - create one tender entry for the page
-            category = 'esg' if any(k in esg_keywords for k in found_keywords) else 'credit_rating'
-            if any(k in esg_keywords for k in found_keywords) and any(k in credit_keywords for k in found_keywords):
-                category = 'both'
-            
             tender = {
                 'title': f"Tender opportunity containing {', '.join(found_keywords[:3])}",
                 'url': page_url,
                 'date': datetime.now().strftime('%Y-%m-%d'),
-                'category': category,
+                'category': 'screening_opportunities',
                 'description': content[:200] + "..." if len(content) > 200 else content,
                 'matched_keywords': found_keywords[:5]  # Limit to first 5
             }
@@ -333,7 +333,12 @@ Generate a detailed professional summary of this tender."""
         
         return state
     
-    async def process_page(self, page_url: str, keywords_esg: List[str], keywords_credit: List[str]) -> Dict[str, Any]:
+    async def process_page(
+        self,
+        page_url: str,
+        sector_activity_keywords: List[str],
+        geography_source_keywords: List[str],
+    ) -> Dict[str, Any]:
         """Process a single page through the agent workflow"""
         try:
             logger.info(f"Processing page: {page_url}")
@@ -354,8 +359,8 @@ Generate a detailed professional summary of this tender."""
             initial_state = {
                 'page_url': page_url,
                 'page_content': result['markdown'],
-                'keywords_esg': keywords_esg,
-                'keywords_credit': keywords_credit,
+                'sector_activity_keywords': sector_activity_keywords,
+                'geography_source_keywords': geography_source_keywords,
                 'categorized_tenders': [],
                 'detailed_tenders': [],
                 'error': ''

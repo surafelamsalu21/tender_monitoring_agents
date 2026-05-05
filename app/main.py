@@ -2,15 +2,17 @@
 FastAPI Main Application
 Entry point for the Tender Monitoring System API
 """
+from datetime import datetime, timezone
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.core.database import create_tables
+from app.core.init_data import ensure_default_screening_keywords
 from app.services.scheduler import TenderScheduler
 from app.api.main import api_router
 
@@ -24,12 +26,13 @@ async def lifespan(app: FastAPI):
     """Application lifespan management"""
     global scheduler
     
-    logger.info("Starting Tender Monitoring System...")
+    logger.info(f"Starting {settings.APP_NAME}...")
 
     # Always ensure DB schema exists, even when app is started directly
     # via `uvicorn app.main:app`.
     create_tables()
-    
+    ensure_default_screening_keywords()
+
     # Initialize scheduler
     scheduler = TenderScheduler()
     
@@ -40,15 +43,15 @@ async def lifespan(app: FastAPI):
     yield
     
     # Cleanup
-    logger.info("Shutting down Tender Monitoring System...")
+    logger.info(f"Shutting down {settings.APP_NAME}...")
     if scheduler:
         await scheduler.stop()
     logger.info("Shutdown complete")
 
 # Create FastAPI app
 app = FastAPI(
-    title="Tender Monitoring System",
-    description="AI-powered tender monitoring and notification system",
+    title=settings.APP_NAME,
+    description="AI-powered tender screening and notifications (Precise).",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -69,7 +72,7 @@ app.include_router(api_router, prefix="/api/v1")
 async def root():
     """Root endpoint"""
     return {
-        "message": "Tender Monitoring System API",
+        "message": f"{settings.APP_NAME} API",
         "version": "1.0.0",
         "status": "running"
     }
@@ -79,20 +82,36 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "timestamp": "2024-01-01T00:00:00Z",
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "scheduler_running": scheduler.running if scheduler else False
     }
 
+@app.get("/extraction-status")
+async def get_extraction_status():
+    """Return whether a tender extraction job is currently running."""
+    if not scheduler:
+        return {"running": False, "started_at": None}
+    return {
+        "running": getattr(scheduler, "extraction_in_progress", False),
+        "started_at": getattr(scheduler, "extraction_started_at", None),
+    }
+
+
 @app.post("/trigger-extraction")
-async def trigger_manual_extraction():
-    """Manually trigger tender extraction"""
+async def trigger_manual_extraction(force: bool = Query(True)):
+    """Manually trigger tender extraction. Use force=false to respect crawl_frequency_hours."""
     if not scheduler:
         return {"error": "Scheduler not initialized"}
     
     try:
-        # Run extraction in background
-        asyncio.create_task(scheduler.run_extraction_once())
-        return {"message": "Manual extraction triggered successfully"}
+        asyncio.create_task(scheduler.run_extraction_once(force=force))
+        mode = (settings.PIPELINE_MODE or "simple").strip().lower()
+        return {
+            "message": "Manual extraction triggered successfully",
+            "force": force,
+            "pipeline_mode": mode,
+            "hint": "simple = harvest artifact → list structure → Agent 2/3; langgraph = legacy checklist Agent 1",
+        }
     except Exception as e:
         logger.error(f"Error triggering manual extraction: {e}")
         return {"error": str(e)}

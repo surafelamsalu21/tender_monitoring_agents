@@ -2,8 +2,9 @@
 Monitored Pages API Routes
 CRUD operations for monitored pages
 """
-from typing import List, Optional
+from typing import List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, HttpUrl
 
@@ -13,11 +14,29 @@ from app.models.page import MonitoredPage
 
 router = APIRouter()
 
+CrawlStrategyLiteral = Literal["crawl4ai", "playwright", "hybrid"]
+
+
+def _page_auth_dict(page: MonitoredPage) -> dict:
+    return {
+        "auth_login_url": getattr(page, "auth_login_url", None),
+        "auth_username_env": getattr(page, "auth_username_env", None),
+        "auth_password_env": getattr(page, "auth_password_env", None),
+        "auth_form_selectors_json": getattr(page, "auth_form_selectors_json", None),
+    }
+
+
 class PageCreate(BaseModel):
     name: str
     url: HttpUrl
     description: Optional[str] = None
     crawl_frequency_hours: int = 3
+    crawl_strategy: CrawlStrategyLiteral = "crawl4ai"
+    auth_login_url: Optional[HttpUrl] = None
+    auth_username_env: Optional[str] = None
+    auth_password_env: Optional[str] = None
+    auth_form_selectors_json: Optional[str] = None
+
 
 class PageUpdate(BaseModel):
     name: Optional[str] = None
@@ -25,6 +44,11 @@ class PageUpdate(BaseModel):
     description: Optional[str] = None
     crawl_frequency_hours: Optional[int] = None
     is_active: Optional[bool] = None
+    crawl_strategy: Optional[CrawlStrategyLiteral] = None
+    auth_login_url: Optional[HttpUrl] = None
+    auth_username_env: Optional[str] = None
+    auth_password_env: Optional[str] = None
+    auth_form_selectors_json: Optional[str] = None
 
 @router.get("/", response_model=List[dict])
 async def get_pages(db: Session = Depends(get_db)):
@@ -40,6 +64,8 @@ async def get_pages(db: Session = Depends(get_db)):
             "description": page.description,
             "is_active": page.is_active,
             "crawl_frequency_hours": page.crawl_frequency_hours,
+            "crawl_strategy": getattr(page, "crawl_strategy", None) or "crawl4ai",
+            **_page_auth_dict(page),
             "last_crawled": page.last_crawled.isoformat() if page.last_crawled else None,
             "last_successful_crawl": page.last_successful_crawl.isoformat() if page.last_successful_crawl else None,
             "consecutive_failures": page.consecutive_failures,
@@ -67,6 +93,8 @@ async def get_page(page_id: int, db: Session = Depends(get_db)):
         "description": page.description,
         "is_active": page.is_active,
         "crawl_frequency_hours": page.crawl_frequency_hours,
+        "crawl_strategy": getattr(page, "crawl_strategy", None) or "crawl4ai",
+        **_page_auth_dict(page),
         "last_crawled": page.last_crawled.isoformat() if page.last_crawled else None,
         "last_successful_crawl": page.last_successful_crawl.isoformat() if page.last_successful_crawl else None,
         "consecutive_failures": page.consecutive_failures,
@@ -100,13 +128,19 @@ async def create_page(page_data: PageCreate, db: Session = Depends(get_db)):
         name=page_data.name,
         url=str(page_data.url),
         description=page_data.description,
-        crawl_frequency_hours=page_data.crawl_frequency_hours
+        crawl_frequency_hours=page_data.crawl_frequency_hours,
+        crawl_strategy=page_data.crawl_strategy,
+        auth_login_url=str(page_data.auth_login_url) if page_data.auth_login_url else None,
+        auth_username_env=page_data.auth_username_env,
+        auth_password_env=page_data.auth_password_env,
+        auth_form_selectors_json=page_data.auth_form_selectors_json,
     )
     
     return {
         "id": page.id,
         "name": page.name,
         "url": page.url,
+        "crawl_strategy": page.crawl_strategy,
         "message": "Page created successfully"
     }
 
@@ -117,8 +151,10 @@ async def update_page(page_id: int, page_data: PageUpdate, db: Session = Depends
     
     # Convert URL to string if provided
     update_data = page_data.dict(exclude_unset=True)
-    if 'url' in update_data:
-        update_data['url'] = str(update_data['url'])
+    if "url" in update_data and update_data["url"] is not None:
+        update_data["url"] = str(update_data["url"])
+    if "auth_login_url" in update_data and update_data["auth_login_url"] is not None:
+        update_data["auth_login_url"] = str(update_data["auth_login_url"])
     
     page = page_repo.update_page(db, page_id, **update_data)
     
@@ -129,6 +165,7 @@ async def update_page(page_id: int, page_data: PageUpdate, db: Session = Depends
         "id": page.id,
         "name": page.name,
         "url": page.url,
+        "crawl_strategy": page.crawl_strategy,
         "message": "Page updated successfully"
     }
 
@@ -136,11 +173,17 @@ async def update_page(page_id: int, page_data: PageUpdate, db: Session = Depends
 async def delete_page(page_id: int, db: Session = Depends(get_db)):
     """Delete a monitored page"""
     page_repo = PageRepository()
-    
-    success = page_repo.delete_page(db, page_id)
+
+    try:
+        success = page_repo.delete_page(db, page_id)
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Could not delete this page because of related database rows. If you just updated the app, retry; otherwise contact support.",
+        ) from exc
     if not success:
         raise HTTPException(status_code=404, detail="Page not found")
-    
+
     return {"message": "Page deleted successfully"}
 
 @router.get("/{page_id}/tenders")

@@ -1,627 +1,509 @@
 """
-FIXED Agent 1: Tender Extraction with STRICT Keyword Filtering
-Updated to remove 'both' category - only ESG or Credit Rating
+Agent 1 — Tender extraction and Precise screening checklist (v2 - Clean & Robust)
+
+Uses clean markdown from crawl4ai (same as Test Crawler), extracts opportunities,
+and applies the Precise screening checklist (Steps 1-3).
+
+Key improvements:
+- Simpler, more robust JSON parsing
+- Better handling of single-object vs array responses
+- Clearer LLM prompting
+- Direct markdown input (clean text, not HTML)
 """
-import logging
+from __future__ import annotations
+
 import json
+import logging
 import re
-from typing import Dict, List, Any
-from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
 from langchain_core.messages import HumanMessage
 
+from app.agents.screening_prompt import PRECISE_SCREENING_CHECKLIST_MARKDOWN
+from app.core.config import settings
 from app.core.llm_factory import get_chat_llm
+from app.pipeline.progress import pipeline_tty
 
 logger = logging.getLogger(__name__)
 
-class TenderExtractionAgent:
-    """
-    FIXED Agent 1: Extract tenders with STRICT keyword filtering
-    Updated to only use 'esg' or 'credit_rating' categories (no 'both')
-    
-    Changes:
-    - Removed 'both' category logic
-    - If tender has keywords from both categories, prioritize by keyword count
-    - Enhanced keyword matching logic
-    - Better validation of extracted tenders
-    """
-    
-    def __init__(self):
-        self.llm = get_chat_llm(temperature=0.1)
-        
-        # Configurable settings for date filtering
-        self.max_days_old = 90
-        self.min_days_deadline = 1
-    
-    async def extract_and_categorize_tenders(self, page_content: str, 
-                                           esg_keywords: List[str], 
-                                           credit_keywords: List[str],
-                                           include_all_tenders: bool = False) -> List[Dict[str, Any]]:
-        """
-        Main asynchronous method to extract and categorize tenders from provided page content.
 
-        Args:
-            page_content (str): HTML/markdown content containing tenders.
-            esg_keywords (List[str]): List of ESG-related keywords for strict filtering.
-            credit_keywords (List[str]): List of credit rating-related keywords.
-            include_all_tenders (bool): If True, process all tenders (for testing) regardless of keywords.
-
-        Returns:
-            List[Dict[str, Any]]: List of tenders, each as a dict, categorized as 'esg' or 'credit_rating'.
-        """
-        try:
-            logger.info("Agent 1: Starting STRICT tender extraction (ESG or Credit Rating only)")
-            logger.info(f"ESG keywords: {esg_keywords}")
-            logger.info(f"Credit keywords: {credit_keywords}")
-            logger.info(f"Keyword filtering: {'DISABLED' if include_all_tenders else 'ENABLED (STRICT)'}")
-            
-            # Step 1: Pre-check if the content contains any relevant keywords
-            if not include_all_tenders:
-                keyword_found = self._check_keywords_in_content(page_content, esg_keywords + credit_keywords)
-                if not keyword_found:
-                    logger.info("Agent 1: No ESG or Credit Rating keywords found in content - skipping extraction")
-                    return []
-            
-            # Step 2: Construct strict prompt for LLM
-            system_prompt = self._build_strict_extraction_prompt(esg_keywords, credit_keywords, include_all_tenders)
-            
-            # Step 3: Build the user message with clear extraction and categorization instructions
-            user_message = f"""
-SCREENING SIGNAL KEYWORDS (context hints only):
-==============================================
-Signal Set A: {', '.join(esg_keywords)}
-Signal Set B: {', '.join(credit_keywords)}
-
-CONTENT TO ANALYZE:
-==================
-{page_content}
-
-CRITICAL INSTRUCTION:
-- Apply the 3-step Screening Checklist
-- Step 1: keep opportunities only when at least 3 of 5 checks are YES
-- Step 2: add non-blocking flags only
-- Step 3: capture title/source/country/type/deadline/estimated_budget/link
-- Return EMPTY ARRAY [] if no opportunities pass Step 1
-
-Return ONLY the JSON array.
-"""
-            
-            # Step 4: Submit the formatted message to the LLM and get a response
-            messages = [
-                HumanMessage(content=f"{system_prompt}\n\n{user_message}")
-            ]
-            
-            response = await self.llm.ainvoke(messages)
-            response_text = response.content.strip()
-            
-            logger.info(f"Agent 1 raw response: {response_text[:300]}...")
-            
-            # Step 5: Parse the LLM JSON output
-            tenders = self._parse_json_response(response_text)
-            
-            # Step 6: Validate that extracted tenders strictly match keywords and are categorized correctly
-            if not include_all_tenders:
-                validated_tenders = self._double_check_keyword_matching(tenders, esg_keywords, credit_keywords)
-                logger.info(f"Before keyword validation: {len(tenders)} tenders")
-                logger.info(f"After keyword validation: {len(validated_tenders)} tenders")
-                tenders = validated_tenders
-            
-            # Step 7: Remove old or expired tenders based on date
-            if not include_all_tenders:
-                filtered_tenders = self._apply_date_filtering(tenders)
-                logger.info(f"After date filtering: {len(filtered_tenders)} tenders")
-                tenders = filtered_tenders
-            
-            # Step 8: Final validation and cleaning of output tenders
-            final_tenders = self._validate_tenders(tenders)
-            
-            logger.info(f"Agent 1 COMPLETED: {len(final_tenders)} valid tenders extracted")
-            self._log_categorization_summary(final_tenders, esg_keywords, credit_keywords)
-            
-            return final_tenders
-            
-        except Exception as e:
-            logger.error(f"Agent 1 failed: {e}")
-            return []
-    
-    def _check_keywords_in_content(self, content: str, keywords: List[str]) -> bool:
-        """
-        Fast, simple check: is *any* ESG or Credit Rating keyword present in content?
-
-        Args:
-            content (str): The full text content to search.
-            keywords (List[str]): List of keywords to search for.
-
-        Returns:
-            bool: True if any keyword is found, else False.
-        """
-        content_lower = content.lower()
-        
-        for keyword in keywords:
-            if keyword.lower() in content_lower:
-                logger.info(f"Pre-check: Found keyword '{keyword}' in content")
-                return True
-        
-        logger.info("Pre-check: No keywords found in content")
+def use_fast_agent1_pipeline() -> bool:
+    """Two-step listing + screening (small prompts). ``auto`` → fast only for Ollama."""
+    mode = (getattr(settings, "PIPELINE_AGENT1_MODE", "auto") or "auto").strip().lower()
+    if mode == "fast":
+        return True
+    if mode == "legacy":
         return False
-    
-    def _build_strict_extraction_prompt(self, esg_keywords: List[str], 
-                                      credit_keywords: List[str],
-                                      include_all_tenders: bool) -> str:
-        """
-        Build the prompt presented to the LLM. This prompt applies the 3-step screening checklist
-        and returns standardized screening output.
+    return (settings.LLM_PROVIDER or "").lower().strip() == "ollama"
 
-        Args:
-            esg_keywords: Legacy signal-set A keywords.
-            credit_keywords: Legacy signal-set B keywords.
-            include_all_tenders: If true, disables filtering (for test purposes).
 
-        Returns:
-            Formatted prompt string for LLM usage.
-        """
-        
-        signal_a_str = ", ".join(esg_keywords)
-        signal_b_str = ", ".join(credit_keywords)
-        
-        keyword_filtering_rules = ""
-        if not include_all_tenders:
-            keyword_filtering_rules = f"""
-CHECKLIST FILTERING MODE:
-=========================
-Use these as optional signal hints if useful:
-- Signal Set A: {signal_a_str}
-- Signal Set B: {signal_b_str}
-
-Apply this exact screening process:
-1) Step 1 Quick Relevance Filter (Yes/No):
-   - mission_alignment
-   - sector_relevance
-   - activity_fit
-   - geographic_fit
-   - eligibility_quick_check
-2) Keep opportunity ONLY if yes_count >= 3
-3) Step 2 flags are non-blocking tags only
-4) Step 3 capture baseline fields
-"""
-        else:
-            keyword_filtering_rules = """
-CHECKLIST FILTERING: DISABLED
-=============================
-Extract all opportunities, but still compute Step 1 yes_count and passes_filter.
-"""
-        
-        return f"""You are a strict opportunity screening specialist.
-
-Purpose:
-- Identify and shortlist relevant opportunities for further review.
-
-Core tasks:
-1. Apply the 3-step Screening Checklist
-2. Keep only opportunities where Step 1 has at least 3 YES (unless testing mode)
-3. Translate all extracted text to English
-4. Return structured JSON only
-
-{keyword_filtering_rules}
-
-EXTRACTION REQUIREMENTS:
-========================
-1. Extract title, URL, date, and brief description
-2. TRANSLATE all non-English content to English
-3. Keep URLs unchanged
-4. Convert dates to YYYY-MM-DD format
-5. For Step 2, only tag; do not eliminate
-6. For Step 3, capture source/country/type/deadline/estimated_budget/link
-
-OUTPUT FORMAT:
-==============
-Return ONLY a JSON array in this exact format:
-[
-  {{
-    "title": "English translated title",
-    "url": "full URL to tender page",
-    "date": "YYYY-MM-DD or null",
-    "description": "English translated brief description",
-    "category": "screening_opportunities",
-    "matched_keywords": ["optional_signal_or_keyword"],
-    "esg_keyword_count": 0,
-    "credit_keyword_count": 0,
-    "screening": {{
-      "step1": {{
-        "mission_alignment": true/false,
-        "sector_relevance": true/false,
-        "activity_fit": true/false,
-        "geographic_fit": true/false,
-        "eligibility_quick_check": true/false
-      }},
-      "yes_count": 0,
-      "passes_filter": true/false,
-      "step2": {{
-        "opportunity_characteristics": ["..."],
-        "strategic_signals": ["..."],
-        "potential_concerns": ["..."]
-      }},
-      "step3": {{
-        "title": "string",
-        "source": "string",
-        "country": "string",
-        "type": "grant|consultancy|other",
-        "deadline": "YYYY-MM-DD or null",
-        "estimated_budget": "string|null",
-        "link": "string"
-      }}
-    }},
-    "confidence_score": 0.95
-  }}
+# Patterns to strip LLM reasoning markup
+_REASONING_PATTERNS = [
+    re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<thinking>.*?</thinking>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<reasoning>.*?</reasoning>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<redacted_thinking>.*?</redacted_thinking>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<thought>.*?</thought>", re.DOTALL | re.IGNORECASE),
 ]
 
-VALIDATION CHECKLIST:
-====================
-Before including any tender, verify:
-✓ Step 1 has five boolean criteria
-✓ yes_count correctly reflects Step 1
-✓ passes_filter = (yes_count >= 3)
-✓ All text is translated to English
-✓ Category is "screening_opportunities"
-✓ Step 2 tags are informative only (non-blocking)
-✓ Step 3 capture is present for passed opportunities
 
-IMPORTANT:
-- Return EMPTY ARRAY [] if no opportunities pass Step 1
-- Focus on opportunities related to economic development, target sectors, and eligible contexts
-- Step 2 must never eliminate opportunities
-- Do not output any text outside JSON"""
-    
-    def _double_check_keyword_matching(self, tenders: List[Dict[str, Any]], 
-                                     esg_keywords: List[str], 
-                                     credit_keywords: List[str]) -> List[Dict[str, Any]]:
+class TenderExtractionAgent:
+    """
+    Extract opportunities from clean markdown content and apply Precise screening.
+
+    Input: Clean markdown text from crawl4ai (same as Test Crawler output)
+    Output: List of screened opportunities with Step 1-3 data
+    """
+
+    STEP1_KEYS = (
+        "mission_alignment",
+        "sector_relevance",
+        "activity_fit",
+        "geographic_fit",
+        "eligibility_quick_check",
+    )
+
+    def __init__(self) -> None:
+        self.llm = get_chat_llm(temperature=0.1)
+
+    async def _run_fast_pipeline(
+        self,
+        page_content: str,
+        keyword_hints: Optional[List[str]],
+        page_url: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Local-optimized: tiny listing prompt + batched compact screening (no full checklist in step 1)."""
+        from app.agents.listing_extraction_agent import ListingExtractionAgent
+        from app.agents.tender_screening_agent import TenderScreeningAgent
+
+        logger.info("Agent 1: fast pipeline (2-step, truncated input)")
+        pipeline_tty("[AGENT1] · fast 1/2 listing (≤{}k chars prompt body) …".format(
+            max(1, int(getattr(settings, "AGENT1_FAST_MAX_INPUT_CHARS", 12000) / 1000)),
+        ))
+        listings = await ListingExtractionAgent().extract_listings(
+            page_content,
+            keyword_hints=keyword_hints,
+            page_url=page_url,
+        )
+        if not listings:
+            logger.warning("Agent 1 fast: listing step returned no rows")
+            pipeline_tty("[AGENT1] · fast listing returned 0 rows")
+            return []
+        pipeline_tty(f"[AGENT1] · fast 2/2 screening {len(listings)} row(s) (batched) …")
+        merged = await TenderScreeningAgent().screen_items(
+            listings, keyword_hints=keyword_hints
+        )
+        return self._validate_and_enrich(merged)
+
+    async def extract_and_screen_opportunities(
+        self,
+        page_content: str,
+        include_all_opportunities: bool = False,
+        keyword_hints: Optional[List[str]] = None,
+        page_url: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
-        Double-check that the returned tenders actually contain the required keywords and are
-        properly categorized. This enforces that no 'both' category is present and the highest
-        matching type is favored.
+        Extract opportunities from clean markdown content.
 
         Args:
-            tenders: List of tender info dictionaries from LLM.
-            esg_keywords: List of ESG keywords.
-            credit_keywords: List of Credit Rating keywords.
+            page_content: Clean markdown text from crawl4ai (NOT raw HTML)
+            include_all_opportunities: Deprecated, ignored
+            keyword_hints: Optional phrases from Keyword Manager
 
         Returns:
-            List of validated/recategorized tenders (dicts).
+            List of validated, screened opportunities
         """
-        validated_tenders = []
-        
-        for tender in tenders:
-            title = tender.get('title', '').lower()
-            description = tender.get('description', '').lower()
-            content = f"{title} {description}"
-            
-            # Track which keywords are actually found in the content
-            found_esg_keywords = []
-            found_credit_keywords = []
-            
-            for keyword in esg_keywords:
-                if keyword.lower() in content:
-                    found_esg_keywords.append(keyword)
-            for keyword in credit_keywords:
-                if keyword.lower() in content:
-                    found_credit_keywords.append(keyword)
-            
-            total_found_keywords = found_esg_keywords + found_credit_keywords
-            
-            if total_found_keywords:
-                esg_count = len(found_esg_keywords)
-                credit_count = len(found_credit_keywords)
-                # Determine category: whichever type has more matches, default to esg if tied
-                if esg_count > credit_count:
-                    category = 'esg'
-                elif credit_count > esg_count:
-                    category = 'credit_rating'
-                else:
-                    category = 'esg' if esg_count > 0 else 'credit_rating'
-                
-                # Update tender dict with new fields and corrected category
-                tender['matched_keywords'] = total_found_keywords
-                tender['esg_keyword_count'] = esg_count
-                tender['credit_keyword_count'] = credit_count
-                tender['keyword_count'] = len(total_found_keywords)
-                tender['category'] = category
-                
-                validated_tenders.append(tender)
-                
-                logger.info(f"✓ Validated: '{tender['title'][:50]}...' → {category}")
-                logger.info(f"  ESG keywords: {found_esg_keywords} (count: {esg_count})")
-                logger.info(f"  Credit keywords: {found_credit_keywords} (count: {credit_count})")
-            else:
-                logger.warning(f"✗ REJECTED: '{tender.get('title', 'Unknown')[:50]}...' - No keywords found")
-        
-        return validated_tenders
-    
-    def _apply_date_filtering(self, tenders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Remove tenders that are too old, based on a date threshold. If the tender is missing
-        a date, it's included with a flagged status.
+        _ = include_all_opportunities  # backward compatibility
 
-        Args:
-            tenders: List of tender dictionaries.
-
-        Returns:
-            Filtered list containing only recent/valid tenders.
-        """
-        filtered_tenders = []
-        current_date = datetime.now().date()
-        max_age = timedelta(days=self.max_days_old)
-        
-        for tender in tenders:
+        if use_fast_agent1_pipeline():
             try:
-                date_str = tender.get('date')
-                if date_str:
-                    tender_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-                    days_old = (current_date - tender_date).days
-                    
-                    if days_old <= self.max_days_old:
-                        tender['date_status'] = 'recent'
-                        filtered_tenders.append(tender)
-                        logger.debug(f"✓ Date OK: {tender['title'][:30]}... ({days_old} days old)")
-                    else:
-                        logger.info(f"✗ Too old: {tender['title'][:30]}... ({days_old} days old)")
-                else:
-                    # If no date field, allow but mark as 'unknown'
-                    tender['date_status'] = 'unknown'
-                    filtered_tenders.append(tender)
-                    logger.debug(f"✓ No date: {tender['title'][:30]}...")
-                    
-            except Exception as e:
-                logger.warning(f"Date parsing error for tender: {e}")
-                tender['date_status'] = 'error'
-                filtered_tenders.append(tender)  # Include on error
-        
-        return filtered_tenders
-    
-    def _parse_json_response(self, response_text: str) -> List[Dict[str, Any]]:
-        """
-        Parse LLM output, handling code block markdown and returning an array of dicts.
-
-        Args:
-            response_text (str): The LLM's reply (may be a JSON array or wrapped in markdown).
-
-        Returns:
-            List[Dict[str, Any]]: Parsed list of tenders, or empty list on parse failure.
-        """
-        try:
-            cleaned_text = response_text
-            if response_text.startswith('```json'):
-                cleaned_text = response_text.replace('```json', '').replace('```', '').strip()
-            elif response_text.startswith('```'):
-                cleaned_text = response_text.replace('```', '').strip()
-            
-            tenders = json.loads(cleaned_text)
-            
-            if not isinstance(tenders, list):
-                logger.warning("Response is not a list, converting to empty list")
+                out = await self._run_fast_pipeline(page_content, keyword_hints, page_url=page_url)
+                pipeline_tty(f"[AGENT1] · fast mode done | validated={len(out)}")
+                return out
+            except Exception as exc:
+                self._log_error(exc)
                 return []
-            
-            return tenders
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response: {e}")
-            logger.error(f"Response preview: {response_text[:200]}...")
-            return []
-        except Exception as e:
-            logger.error(f"Unexpected error parsing response: {e}")
-            return []
-    
-    def _validate_tenders(self, tenders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Final cleaning and structuring of tender data, enforcing field requirements
-        and allowed category values.
 
-        Args:
-            tenders: List of tender dictionaries.
+        import asyncio
 
-        Returns:
-            List of fully validated, structured tenders (dict).
-        """
-        validated = []
-        
-        for tender in tenders:
-            try:
-                if not tender.get('title') or not tender.get('url'):
-                    logger.warning(f"Skipping tender with missing title or URL: {tender}")
-                    continue
-                
-                category = tender.get('category', '').lower()
-                if category not in ['esg', 'credit_rating']:
-                    logger.warning(f"Invalid category '{category}' for tender: {tender.get('title', 'N/A')}")
-                    category = 'esg'
-                
-                if 'matched_keywords' not in tender:
-                    tender['matched_keywords'] = []
-                
-                cleaned_tender = {
-                    'title': str(tender.get('title', '')).strip(),
-                    'url': str(tender.get('url', '')).strip(),
-                    'date': tender.get('date'),
-                    'description': str(tender.get('description', '')).strip()[:500],  # Optional: truncate
-                    'category': category,
-                    'matched_keywords': tender.get('matched_keywords', []),
-                    'esg_keyword_count': tender.get('esg_keyword_count', 0),
-                    'credit_keyword_count': tender.get('credit_keyword_count', 0),
-                    'keyword_count': len(tender.get('matched_keywords', [])),
-                    'date_status': tender.get('date_status', 'unknown'),
-                    'confidence_score': tender.get('confidence_score', 0.8)
-                }
-                validated.append(cleaned_tender)
-            except Exception as e:
-                logger.warning(f"Error validating tender: {e}, tender: {tender}")
-                continue
-        
-        return validated
-    
-    def _log_categorization_summary(self, tenders: List[Dict[str, Any]], 
-                                  esg_keywords: List[str], credit_keywords: List[str]):
-        """
-        Outputs informational logs, summarizing the number and type of extracted tenders,
-        as well as statistics on keyword usage.
+        system_prompt = self._build_system_prompt()
+        user_prompt = self._build_user_prompt(page_content, keyword_hints)
 
-        Args:
-            tenders: List of final validated tenders.
-            esg_keywords: List of ESG keywords.
-            credit_keywords: List of credit rating keywords.
-        """
-        if not tenders:
-            logger.info("❌ No tenders found matching ESG or Credit Rating keywords")
-            logger.info(f"   Searched for ESG: {esg_keywords}")
-            logger.info(f"   Searched for Credit: {credit_keywords}")
-            return
-        
-        esg_count = len([t for t in tenders if t['category'] == 'esg'])
-        credit_count = len([t for t in tenders if t['category'] == 'credit_rating'])
-        
-        # Gather global keyword usage statistics
-        all_matched_keywords = []
-        for tender in tenders:
-            all_matched_keywords.extend(tender.get('matched_keywords', []))
-        
-        keyword_usage = {}
-        for keyword in all_matched_keywords:
-            keyword_usage[keyword] = keyword_usage.get(keyword, 0) + 1
-        
-        logger.info("✅ EXTRACTION SUMMARY (No 'Both' Category):")
-        logger.info(f"   ESG tenders: {esg_count}")
-        logger.info(f"   Credit Rating tenders: {credit_count}")
-        logger.info(f"   Total: {len(tenders)}")
-        
-        if keyword_usage:
-            logger.info("📊 KEYWORD USAGE:")
-            for keyword, count in sorted(keyword_usage.items(), key=lambda x: x[1], reverse=True):
-                keyword_type = "ESG" if keyword in esg_keywords else "Credit Rating"
-                logger.info(f"   '{keyword}' ({keyword_type}): {count} matches")
-        
-        # Show a few sample tenders
-        logger.info("🔍 SAMPLE RESULTS:")
-        for i, tender in enumerate(tenders[:3]):
-            esg_count = tender.get('esg_keyword_count', 0)
-            credit_count = tender.get('credit_keyword_count', 0)
-            logger.info(f"   {i+1}. {tender['title'][:50]}... → {tender['category']}")
-            logger.info(f"      ESG keywords: {esg_count}, Credit keywords: {credit_count}")
-            logger.info(f"      Matched: {tender['matched_keywords']}")
-    
-    async def save_keyword_matches_to_db(self, tender_id: int, matched_keywords: List[str], 
-                                       tender_repo, keyword_repo, db):
-        """
-        Optional: Save keyword-to-tender associations to the database.
-        Useful for analytics, feedback, and reporting on keyword usage.
+        content_size = len(page_content)
+        prompt_size = len(system_prompt) + len(user_prompt)
+        logger.info(f"Agent 1: Starting extraction (content={content_size} chars, prompt={prompt_size} chars)")
 
-        Args:
-            tender_id (int): Database row id for tender.
-            matched_keywords (List[str]): List of found keywords.
-            tender_repo: Repo/controller for tender-related DB ops.
-            keyword_repo: Repo/controller for keyword-related DB ops.
-            db: Database session/connection object.
-        """
+        # Warn if content is very large (will be slow with local LLMs)
+        if content_size > 100_000:
+            logger.warning(f"Agent 1: Very large page content ({content_size:,} chars). Extraction may be slow with local LLMs.")
+
         try:
-            for keyword_str in matched_keywords:
-                # Retrieve all ESG and Credit Rating keywords from DB for lookups
-                keywords = keyword_repo.get_keywords_by_category(db, "esg") + \
-                          keyword_repo.get_keywords_by_category(db, "credit_rating")
-                
-                for keyword_obj in keywords:
-                    if keyword_obj.keyword.lower() == keyword_str.lower():
-                        # Create association row and increment keyword usage stats
-                        tender_repo.add_keyword_match(db, tender_id, keyword_obj.id)
-                        keyword_obj.increment_usage()
-                        logger.info(f"Saved keyword match: tender {tender_id} ↔ keyword '{keyword_str}'")
-                        break
-        except Exception as e:
-            logger.error(f"Error saving keyword matches: {e}")
+            llm_timeout = int(getattr(settings, "AGENT1_LLM_TIMEOUT_SEC", 600) or 600)
+            logger.info("Agent 1: Calling LLM...")
+            if (settings.LLM_PROVIDER or "").lower().strip() == "ollama":
+                pipeline_tty(
+                    f"[AGENT1] · awaiting Ollama ({settings.OLLAMA_MODEL}) "
+                    f"— timeout {llm_timeout}s wall-clock; ensure `ollama serve` and model are pulled"
+                )
+            llm_task = self.llm.ainvoke(
+                [HumanMessage(content=f"{system_prompt}\n\n{user_prompt}")]
+            )
+            response = await asyncio.wait_for(llm_task, timeout=llm_timeout)
+            logger.info("Agent 1: LLM responded")
+            if (settings.LLM_PROVIDER or "").lower().strip() == "ollama":
+                pipeline_tty("[AGENT1] · Ollama returned — parsing JSON…")
 
+            raw_output = self._extract_content(response)
+            logger.debug("Agent 1 raw output (first 500 chars): %s", raw_output[:500])
 
-class KeywordMatcher:
-    """
-    Utility class for advanced keyword matching logic.
-    Supports fuzzy/stemmed and word-boundary matching (optional use).
-    """
+            # Parse the output
+            opportunities = self._parse_llm_output(raw_output)
 
-    @staticmethod
-    def find_keyword_matches(text: str, keywords: List[str]) -> List[str]:
-        """
-        Finds keyword matches in text, supporting basic stemming and word boundary logic.
+            if not opportunities:
+                logger.warning("Agent 1: No opportunities parsed from output")
+                logger.debug("Full raw output: %s", raw_output[:2000])
+                return []
 
-        Args:
-            text: Text to be analyzed.
-            keywords: List of keywords to try to match/fuzzily find.
+            logger.info("Agent 1: extracted %d opportunities", len(opportunities))
 
-        Returns:
-            List of matching keywords detected in the text.
-        """
-        text_lower = text.lower()
-        matches = []
-        
-        for keyword in keywords:
-            keyword_lower = keyword.lower()
-            
-            # Direct substring match
-            if keyword_lower in text_lower:
-                matches.append(keyword)
+            # Validate and enrich
+            validated = self._validate_and_enrich(opportunities)
+
+            logger.info("Agent 1: validated %d opportunities", len(validated))
+            return validated
+
+        except asyncio.TimeoutError:
+            logger.error(
+                "Agent 1: LLM call timed out after %ss. Content too large or LLM too slow.",
+                getattr(settings, "AGENT1_LLM_TIMEOUT_SEC", 600),
+            )
+            logger.error(
+                "Agent 1: Raise AGENT1_LLM_TIMEOUT_SEC, use PIPELINE_AGENT1_MODE=fast with Ollama, "
+                "or switch LLM_PROVIDER=openai."
+            )
+            return []
+        except Exception as exc:
+            self._log_error(exc)
+            return []
+
+    def _build_system_prompt(self) -> str:
+        """Build the system prompt with screening checklist."""
+        return f"""You are a tender opportunity extraction specialist.
+
+{PRECISE_SCREENING_CHECKLIST_MARKDOWN}
+
+=== EXTRACTION RULES ===
+1. Extract ALL tender opportunities visible in the content
+2. For each opportunity, complete Step 1 (5 YES/NO criteria) and calculate yes_count
+3. Include ONLY opportunities with yes_count >= 3. Drop 0/5, 1/5, and 2/5 rows.
+4. Set passes_filter = true for every included row. Do not include low-match rows with passes_filter=false.
+5. Complete Step 2 (characteristics, signals, concerns) and Step 3 (title, source, country, type, deadline, budget, link)
+6. ALL output text must be in English (use source_language field to tag original language)
+7. Be strict: generic goods, vehicles, equipment, security, construction, logistics, events, or IT procurement should be omitted unless it clearly matches Precise's sectors/activities/geography.
+
+=== OUTPUT FORMAT ===
+Return ONLY a JSON array of opportunity objects.
+NO markdown code fences, NO explanations, NO reasoning text.
+Start with [ and end with ]
+
+Example structure:
+[
+  {{
+    "title": "Tender Title",
+    "url": "https://example.com/tender/123",
+    "date": "2024-01-15",
+    "description": "Brief description",
+    "screening": {{
+      "unrelated_to_precise_scope": false,
+      "step1": {{
+        "mission_alignment": true,
+        "sector_relevance": true,
+        "activity_fit": true,
+        "geographic_fit": true,
+        "eligibility_quick_check": true
+      }},
+      "yes_count": 5,
+      "passes_filter": true,
+      "source_language": "en",
+      "step2": {{
+        "opportunity_characteristics": ["characteristic 1"],
+        "strategic_signals": ["signal 1"],
+        "potential_concerns": ["concern 1"]
+      }},
+      "step3": {{
+        "title": "Tender Title",
+        "source": "Organization Name",
+        "country": "Country Name",
+        "type": "grant|consultancy|tender|other",
+        "deadline": "2024-01-30",
+        "estimated_budget": "string or null",
+        "link": "https://example.com/tender/123"
+      }}
+    }}
+  }}
+]
+"""
+
+    def _build_user_prompt(
+        self,
+        page_content: str,
+        keyword_hints: Optional[List[str]],
+    ) -> str:
+        """Build the user prompt with content to analyze."""
+        # For local LLMs, be more aggressive with truncation
+        max_chars = 60_000 if (settings.LLM_PROVIDER or "").lower() == "ollama" else 120_000
+
+        content = page_content
+        if len(page_content) > max_chars:
+            # Keep beginning (most important) and a bit of end (for pagination/footer links)
+            head = page_content[:50_000]
+            tail = page_content[-8_000:]
+            omitted = len(page_content) - max_chars
+            content = f"{head}\n\n[... {omitted:,} characters omitted for speed ...]\n\n{tail}"
+            logger.info(f"Agent 1: Truncated content from {len(page_content):,} to {len(content):,} chars (local LLM optimization)")
+
+        keyword_section = ""
+        if keyword_hints:
+            hints = ", ".join(str(h).strip() for h in keyword_hints if str(h).strip())
+            if hints:
+                keyword_section = f"""
+
+Keyword hints (weak signals only):
+{hints}"""
+
+        return f"""Analyze this page content and extract all tender opportunities.
+
+CONTENT:
+{content}{keyword_section}
+
+Extract opportunities as a JSON array only."""
+
+    def _extract_content(self, response: Any) -> str:
+        """Extract text content from LLM response."""
+        text = getattr(response, "content", None) or ""
+
+        # Handle Ollama-specific response format
+        extra = getattr(response, "additional_kwargs", {}) or {}
+        for key in ("answer", "response", "output"):
+            chunk = extra.get(key)
+            if isinstance(chunk, str) and chunk.strip():
+                text = chunk.strip()
+                break
+
+        return text.strip()
+
+    def _parse_llm_output(self, raw: str) -> List[Dict[str, Any]]:
+        """Parse LLM output into list of opportunities."""
+        if not raw:
+            return []
+
+        t = raw.strip()
+
+        # 1) Whole-document JSON first (avoids mis-slicing ``[`` inside nested fields).
+        try:
+            payload = json.loads(t)
+        except json.JSONDecodeError:
+            payload = None
+        if payload is not None:
+            as_list = self._json_root_to_opportunity_list(payload)
+            if as_list is not None:
+                return as_list  # type: ignore[return-value]
+
+        # 2) Bracket slice on raw — JSON may live inside ``<think>`` wrappers; stripping would delete it.
+        bracket = self._try_load_bracket_array(t)
+        if bracket is not None:
+            return bracket  # type: ignore[return-value]
+
+        # 3) Strip reasoning markup, then reuse :meth:`_extract_json`.
+        cleaned = self._strip_reasoning(raw)
+        json_data = self._extract_json(cleaned)
+        if json_data is None:
+            logger.warning("Agent 1: Could not extract JSON from output")
+            return []
+
+        if isinstance(json_data, list):
+            return json_data
+
+        if isinstance(json_data, dict):
+            if json_data.get("title") and json_data.get("url"):
+                return [json_data]
+
+            for key in ("opportunities", "items", "tenders", "results", "data", "rows"):
+                if key in json_data and isinstance(json_data[key], list):
+                    return json_data[key]
+
+            return [json_data]
+
+        return []
+
+    def _strip_reasoning(self, text: str) -> str:
+        """Remove LLM reasoning markup."""
+        result = text
+        for pattern in _REASONING_PATTERNS:
+            result = pattern.sub("", result)
+        return result.strip()
+
+    def _extract_json(self, text: str) -> Optional[Any]:
+        """Extract JSON from text, handling various formats."""
+        if not text:
+            return None
+
+        # Try direct JSON parse first
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Strip markdown code fences
+        cleaned = text
+        if cleaned.startswith("```"):
+            # Remove opening fence
+            lines = cleaned.split("\n", 1)
+            if len(lines) > 1:
+                cleaned = lines[1]
+            else:
+                cleaned = cleaned[3:]
+
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3].strip()
+
+        # Handle ```json ... ```
+        if "```json" in cleaned:
+            parts = cleaned.split("```json", 1)
+            if len(parts) > 1:
+                cleaned = parts[1].split("```", 1)[0].strip()
+        elif "```" in cleaned:
+            parts = cleaned.split("```", 1)
+            if len(parts) > 1:
+                cleaned = parts[1].split("```", 1)[0].strip()
+
+        # Try parsing again
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+
+        # Find array bounds
+        start = text.find("[")
+        end = text.rfind("]")
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+
+        # Find object bounds
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
+    def _validate_and_enrich(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Validate and enrich opportunity data."""
+        validated: List[Dict[str, Any]] = []
+
+        for item in items:
+            # Required fields
+            title = str(item.get("title", "")).strip()
+            url = str(item.get("url", "")).strip()
+
+            if not title or not url:
                 continue
-            
-            # Basic stemmed match (naive, for items ending in s/ing/ed)
-            keyword_stem = keyword_lower.rstrip('s').rstrip('ing').rstrip('ed')
-            if len(keyword_stem) > 3 and keyword_stem in text_lower:
-                matches.append(keyword)
+
+            description = str(item.get("description", "")).strip()
+
+            # Get or create screening data
+            screening = item.get("screening", {}) or {}
+
+            # Check unrelated flag
+            if screening.get("unrelated_to_precise_scope", False):
                 continue
-            
-            # Word boundary regex match (precise)
-            pattern = r'\b' + re.escape(keyword_lower) + r'\b'
-            if re.search(pattern, text_lower):
-                matches.append(keyword)
-        
-        return list(set(matches))  # Remove duplicates
 
-# -------------------------------------------------------------------
-# DETAILED COMMENTS ABOUT THIS CODE AND FILE
+            # Calculate yes_count from step1
+            step1 = screening.get("step1", {}) or {}
+            yes_count = sum(1 for key in self.STEP1_KEYS if step1.get(key))
 
-# This file (app/agents/agent1.py) defines an extraction agent (TenderExtractionAgent)
-# for processing tenders scraped from web pages. Its main focus is on enforcing *strict*
-# keyword-based filtering to identify and extract only tenders that are relevant to either
-# "ESG" (environmental, social, and governance) or "Credit Rating" topics.
-#
-# KEY POINTS:
-#
-# - There are two main categories: 'esg' and 'credit_rating'. *No* 'both' option is allowed.
-#   If a tender includes keywords from both areas, the agent picks the category with the most matches.
-#
-# - The extraction process has several robust layers:
-#       1. Fast pre-filter: Checks the content for presence of *any* ESG/Credit keywords.
-#       2. Strict system/user prompts for the LLM, commanding it to extract only matching tenders.
-#       3. The result is parsed, and post-processed in Python to recheck both keyword matching
-#          and strict category assignment—guarding against LLM mistakes.
-#       4. Optional date filtering is enforced; tenders older than max_days_old are skipped.
-#       5. Extensive validation for each tender's structure, category, and fields before returning.
-#
-# - Logging is detailed and systematic:
-#       * Logs all stages including the initial request, any keyword finds, response statistics,
-#         filtering steps, keyword usage stats, and even sample results.
-#
-# - Helper methods are modular/private, making testing and maintenance easy.
-#
-# - The KeywordMatcher class (at the end) provides advanced keyword matching logic, including
-#   basic stemming and word-boundary regex, which can help in fuzzy matching if needed.
-#
-# - The class also optionally saves keyword-to-tender correlations to a database for analytics.
-#
-# - This file is a key "intelligent agent" in the processing pipeline: it bridges raw scraped
-#   tender content, the LLM for semantic extraction, and rigorous post-extraction checks to
-#   guarantee data is relevant, accurate, and useful.
-#
-# HOW TO USE / EXTEND:
-#
-# - Main entrypoint is extract_and_categorize_tenders (async method).
-# - Keyword lists must be provided: esg_keywords, credit_keywords.
-# - Database functions are abstracted and optional (not required for core extraction).
-# - The prompt and filtering logic are completely focused on strict inclusiveness/exclusiveness
-#   for only the two categories of interest.
-#
-# The combination of LLM-powered structured extraction + hard Python-side validation provides
-# high reliability for downstream use (analytics, display, storage).
-#
-# -------------------------------------------------------------------
+            # Keep only opportunities that pass the initial checklist threshold.
+            if yes_count < 3:
+                continue
+
+            # Enrich screening data
+            screening["yes_count"] = yes_count
+            screening["passes_filter"] = yes_count >= 3
+            screening["unrelated_to_precise_scope"] = False
+            screening.setdefault("step2", {})
+            screening.setdefault("step3", {})
+            screening["screening_version"] = "v1_checklist"
+
+            # Handle source language
+            raw_lang = screening.get("source_language")
+            if isinstance(raw_lang, str) and raw_lang.strip():
+                screening["source_language"] = raw_lang.strip()[:32].lower()
+            else:
+                screening.pop("source_language", None)
+
+            validated.append({
+                "title": title,
+                "url": url,
+                "date": item.get("date"),
+                "description": description,
+                "screening": screening,
+                "date_status": "unknown",
+            })
+
+        return validated
+
+    def _validate(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Backward-compatible alias for :meth:`_validate_and_enrich` (tests, legacy callers)."""
+        return self._validate_and_enrich(items)
+
+    def _parse_json(self, response_text: str) -> List[Dict[str, Any]]:
+        """Backward-compatible alias for checklist-shaped JSON (tests, legacy callers)."""
+        return self._parse_llm_output(response_text)
+
+    def _try_load_bracket_array(self, text: str) -> Optional[List[Any]]:
+        start, end = text.find("["), text.rfind("]")
+        if start == -1 or end <= start:
+            return None
+        try:
+            payload = json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, list) else None
+
+    def _json_root_to_opportunity_list(self, payload: Any) -> Optional[List[Any]]:
+        """Normalize a JSON root (array or single opportunity object) to a list."""
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            title = str(payload.get("title", "")).strip()
+            url = str(payload.get("url", "")).strip()
+            if title and url:
+                return [payload]
+            for key in ("opportunities", "items", "tenders", "results", "data", "rows"):
+                inner = payload.get(key)
+                if isinstance(inner, list):
+                    return inner
+        return None
+
+    def _log_error(self, exc: Exception) -> None:
+        """Log error with helpful hints."""
+        err_msg = str(exc).lower()
+        hint = ""
+
+        prov = (settings.LLM_PROVIDER or "").lower().strip()
+        if any(word in err_msg for word in ("connection", "connect", "refused", "unreachable")):
+            if prov == "ollama":
+                hint = (
+                    f" [LLM unreachable: OLLAMA_BASE_URL={settings.OLLAMA_BASE_URL!r} — "
+                    f"ensure Ollama is running (`ollama serve`)]"
+                )
+            elif prov == "openai":
+                hint = " [LLM unreachable — check OPENAI_API_KEY]"
+
+        logger.error("Agent 1 extraction failed: %s%s", exc, hint)

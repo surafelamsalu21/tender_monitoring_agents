@@ -85,6 +85,8 @@ export interface ScreeningStep2 {
   opportunity_characteristics?: string[];
   strategic_signals?: string[];
   potential_concerns?: string[];
+  /** ISO-style tag copied from Agent 1 when notice was non-English (fr, mixed, …) */
+  source_language?: string;
 }
 
 export interface ScreeningStep3 {
@@ -102,6 +104,7 @@ export interface Page {
   url: string;
   name: string;
   is_active: boolean;
+  crawl_strategy?: 'crawl4ai' | 'playwright' | 'hybrid';
   created_at: string;
   updated_at: string;
 }
@@ -116,8 +119,10 @@ export interface Keyword {
 
 export interface Stats {
   total: number;
-  passed: number;
-  failed: number;
+  /** Strong match — Step 1 yes_count >= 3 */
+  recommended: number;
+  /** Low match — Step 1 yes_count 1–2 (still visible in list) */
+  lowMatch: number;
   pages: number;
 }
 

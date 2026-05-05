@@ -22,7 +22,7 @@ class Tender(Base):
 
     Represents the primary tender data entity. Each Tender:
         - Has a unique title and URL.
-        - Is categorized by a 'category' (e.g., esg, credit_rating).
+        - Uses a `category` label for routing/display (e.g. screening_opportunities).
         - Supports rich text description and date fields.
         - Tracks which keywords matched this tender (for filtering/search/notifications).
         - Maintains both explicit many-to-many relation (matched_keywords)
@@ -65,8 +65,15 @@ class Tender(Base):
     page_id = Column(Integer, ForeignKey("monitored_pages.id"), nullable=False)
     page = relationship("MonitoredPage", back_populates="tenders")
 
-    # One-to-one relationship: Each tender can have extended details parsed later
-    detailed_tender = relationship("DetailedTender", back_populates="tender", uselist=False)
+    # One-to-one relationship: Each tender can have extended details parsed later.
+    # Cascade delete so removing a Tender (or parent MonitoredPage) removes DetailedTender
+    # instead of nulling tender_id (NOT NULL — would raise IntegrityError).
+    detailed_tender = relationship(
+        "DetailedTender",
+        back_populates="tender",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
     
     # Many-to-many relationship with keywords (see association table above)
     matched_keywords = relationship(
@@ -139,7 +146,7 @@ class DetailedTender(Base):
 ################################################################################
 #
 # Purpose:
-#   - Defines the SQLAlchemy ORM models for representing tenders (procurement notices, ESG, or credit rating opportunities) and the extended details about each tender.
+#   - Defines tender ORM models (screening-aligned opportunities) and detailed tender rows.
 #   - Supports efficient keyword tracking for tenders, which allows the system to record which keywords matched a particular tender, both for display (JSON column) and for advanced relational queries (many-to-many through tender_keywords table).
 #
 # Main Components:

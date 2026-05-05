@@ -3,11 +3,12 @@ Fixed System API Routes
 app/api/routes/system.py
 """
 from typing import Dict, Any, List, Literal, Optional
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
 from datetime import datetime
 import logging
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from pydantic import BaseModel, EmailStr, Field, HttpUrl
 
 from app.core.database import get_db
 from app.services.email_service import EnhancedEmailService
@@ -18,9 +19,11 @@ from app.repositories.tender_repository import TenderRepository
 from app.agents import TenderAgent
 from app.agents.agent2 import TenderDetailAgent
 from app.agents.agent3 import EmailComposerAgent
-
-from pydantic import BaseModel, HttpUrl
 from app.services.scraper import TenderScraper
+from app.crawl.orchestrator import _flatten_scrape_links
+from app.utils.listing_prep import dual_markdown_for_agent1_and_expiry
+from app.pipeline.crawl_artifact import crawl_artifact_from_scraper_dict
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -70,6 +73,14 @@ class SyntheticPipelineTestRequest(BaseModel):
     send_emails: bool = True
     run_id: str = "baseline"
     deadline_override: Optional[str] = None
+
+
+class Agent1ScreeningTestRequest(BaseModel):
+    """Run TenderExtractionAgent (LLM) on pasted text only — no DB writes."""
+
+    page_content: str = Field(..., min_length=20, description="Scraped markdown or pasted notice text")
+    page_url: Optional[str] = Field(None, description="Optional source URL for model context")
+
 
 # Instantiate the logger for this module
 logger = logging.getLogger(__name__)
@@ -160,14 +171,7 @@ async def save_email_settings(settings: EmailSettings, db: Session = Depends(get
     """
     try:
         logger.info(f"Saving email settings: {settings}")
-        
-        # Validation: require at least one sender
-        if not settings.opportunity_emails:
-            raise HTTPException(
-                status_code=400, 
-                detail="At least one email address must be configured"
-            )
-        
+
         email_repo = EmailSettingsRepository()
         settings_dict = {
             'opportunity_emails': settings.opportunity_emails,
@@ -459,6 +463,57 @@ async def test_crawler(request: TestCrawlerRequest):
             'error': f'Server error while testing crawler: {str(e)}'
         }
 
+
+@router.post("/test-agent1-screening")
+async def test_agent1_screening(request: Agent1ScreeningTestRequest):
+    """
+    Run **Agent 1 (TenderExtractionAgent)** against pasted text — **real LLM**, **no database**.
+
+    Workflow:
+    1. Paste markdown from **Test Crawler** (`POST /system/test-crawler`) or any notice text.
+    2. Call this endpoint with `page_content` (and optional `page_url` for context).
+
+    Response `items` are post-validation (0/5 and unrelated rows are already dropped).
+    Check `screening.yes_count` and `screening.passes_filter` (True = recommended ≥3 YES).
+
+    Requires API keys / model configured like production (`OPENAI_API_KEY`, etc.).
+    """
+    try:
+        from app.agents.agent1 import TenderExtractionAgent
+
+        content = request.page_content.strip()
+        if request.page_url:
+            content = f"Page URL (context): {request.page_url.strip()}\n\n{content}"
+
+        agent = TenderExtractionAgent()
+        items = await agent.extract_and_screen_opportunities(
+            page_content=content,
+            page_url=(request.page_url.strip() if request.page_url else None),
+        )
+
+        summary = []
+        for item in items:
+            scr = item.get("screening") or {}
+            summary.append(
+                {
+                    "title": item.get("title"),
+                    "url": item.get("url"),
+                    "yes_count": scr.get("yes_count"),
+                    "passes_filter": scr.get("passes_filter"),
+                }
+            )
+
+        return {
+            "success": True,
+            "count": len(items),
+            "summary": summary,
+            "items": items,
+        }
+    except Exception as e:
+        logger.exception("test_agent1_screening failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/test-pipeline")
 async def test_full_pipeline(request: PipelineTestRequest, db: Session = Depends(get_db)):
     """
@@ -499,12 +554,32 @@ async def test_full_pipeline(request: PipelineTestRequest, db: Session = Depends
                 detail=f"Scraping failed: {scrape_result.get('error', 'Unknown scraping error')}",
             )
 
+        scrape_md = scrape_result.get("markdown", "")
+        scrape_links = _flatten_scrape_links(scrape_result.get("links"))
+        artifact = crawl_artifact_from_scraper_dict(scrape_result)
+
+        pipeline_mode = (settings.PIPELINE_MODE or "simple").strip().lower()
+        if pipeline_mode in ("langgraph", "legacy"):
+            agent_md, listing_for_expiry = dual_markdown_for_agent1_and_expiry(
+                page_url,
+                scrape_md,
+                scrape_links,
+                html=scrape_result.get("html"),
+            )
+            crawl_kw = None
+        else:
+            agent_md = scrape_md
+            listing_for_expiry = scrape_md
+            crawl_kw = artifact
+
         workflow_result = await tender_agent.process_page(
-            page_content=scrape_result.get("markdown", ""),
+            page_content=agent_md,
             page_url=page_url,
             page_id=page.id,
             tender_repo=tender_repo,
             db=db,
+            listing_markdown_for_expiry=listing_for_expiry,
+            crawl_artifact=crawl_kw,
         )
 
         if workflow_result.get("workflow_failed"):
@@ -648,6 +723,7 @@ async def test_synthetic_pipeline(request: SyntheticPipelineTestRequest, db: Ses
             fallback_title = f"Productive Use of Energy for SMEs in Ethiopia (Run {run_id})"
             fallback_url = "https://example.com/synthetic-opportunity-detail"
             fallback_screening = {
+                "unrelated_to_precise_scope": False,
                 "step1": {
                     "mission_alignment": True,
                     "sector_relevance": True,
@@ -818,8 +894,7 @@ async def test_synthetic_pipeline(request: SyntheticPipelineTestRequest, db: Ses
 # -------------
 # This file defines the system/configuration endpoints for a FastAPI backend
 # application related to monitoring tenders, crawling web pages, and managing
-# notification preferences and logs for ESG (Environmental, Social, Governance)
-# and credit rating alerts.
+# notification preferences and logs for opportunity screening alerts.
 
 # Key Functional Areas:
 # ---------------------
@@ -828,7 +903,7 @@ async def test_synthetic_pipeline(request: SyntheticPipelineTestRequest, db: Ses
 #
 # 2) Notification Email Settings (`/email-settings`, `/email-settings/{category}/add`, `/email-settings/{category}/{email}`):
 #    - Enables GET/POST to fetch and save the primary notification and preference config
-#    - Supports per-team lists (ESG and Credit Rating)
+#    - Unified recipient list (`opportunity_emails`) for screening notifications (`screening_opportunities`).
 #    - Addition and removal endpoints simplify client management of lists.
 #    - Settings are managed via the EmailSettingsRepository abstraction.
 #

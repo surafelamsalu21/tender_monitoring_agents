@@ -3,8 +3,10 @@ Enhanced Agent 2: Detail Extraction with Date Validation
 Validates tender dates and filters out expired tenders
 """
 import logging
+import re
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
+from urllib.parse import parse_qs, urljoin, urlparse
 from langchain_core.messages import HumanMessage
 
 from app.core.llm_factory import get_chat_llm
@@ -121,6 +123,7 @@ class TenderDetailAgent:
         """
         Scrapes the tender page using the TenderScraper service and returns its content (in markdown).
         """
+        tender_url = await self._repair_undp_detail_url(tender_url) or tender_url
         try:
             logger.info(f"Scraping tender page: {tender_url}")
             
@@ -132,11 +135,125 @@ class TenderDetailAgent:
                     logger.info(f"Successfully scraped {len(content)} characters from {tender_url}")
                     return content
                 else:
-                    logger.error(f"Scraping failed for {tender_url}: {result.get('error', 'Unknown error')}")
+                    error = result.get('error', 'Unknown error')
+                    logger.error(f"Scraping failed for {tender_url}: {error}")
+                    if self._should_use_playwright_detail_fallback(tender_url, error):
+                        return await self._scrape_detail_with_playwright(tender_url)
                     return None
                     
         except Exception as e:
             logger.error(f"Exception while scraping {tender_url}: {e}")
+            if self._is_undp_url(tender_url):
+                return await self._scrape_detail_with_playwright(tender_url)
+            return None
+
+    def _is_undp_url(self, url: str) -> bool:
+        return urlparse(str(url or "")).netloc.lower() == "procurement-notices.undp.org"
+
+    def _should_use_playwright_detail_fallback(self, url: str, error: str) -> bool:
+        if not self._is_undp_url(url):
+            return False
+        low = str(error or "").lower()
+        return (
+            "anti-bot" in low
+            or "minimal_text" in low
+            or "no_content_elements" in low
+            or "issue" in low
+        )
+
+    async def _repair_undp_detail_url(self, tender_url: str) -> Optional[str]:
+        """
+        Older Agent1 outputs sometimes used `view_notice.cfm?notice_id=UNDP-...`.
+        Current UNDP Quantum notices need `view_negotiation.cfm?nego_id=...`; resolve it
+        from the public listing page before Agent2 scrapes details.
+        """
+        parsed = urlparse(str(tender_url or ""))
+        if parsed.netloc.lower() != "procurement-notices.undp.org":
+            return None
+        if not parsed.path.endswith("view_notice.cfm"):
+            return None
+
+        ref = (parse_qs(parsed.query).get("notice_id") or [""])[0].strip()
+        if not ref.upper().startswith("UNDP-"):
+            return None
+
+        try:
+            import requests
+            from bs4 import BeautifulSoup
+
+            def _lookup() -> Optional[str]:
+                html = requests.get(
+                    "https://procurement-notices.undp.org/",
+                    timeout=20,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                ).text
+                soup = BeautifulSoup(html, "html.parser")
+                for anchor in soup.find_all("a", href=True):
+                    text = anchor.get_text(" ", strip=True)
+                    if ref in text:
+                        return urljoin(
+                            "https://procurement-notices.undp.org/",
+                            anchor["href"],
+                        )
+                return None
+
+            import asyncio
+
+            repaired = await asyncio.to_thread(_lookup)
+            if repaired:
+                logger.info("Repaired UNDP detail URL %s -> %s", tender_url, repaired)
+            return repaired
+        except Exception as exc:
+            logger.warning("Could not repair UNDP detail URL %s: %s", tender_url, exc)
+            return None
+
+    async def _scrape_detail_with_playwright(self, tender_url: str) -> Optional[str]:
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:
+            logger.error("Playwright detail fallback unavailable: %s", exc)
+            return None
+
+        logger.info("Agent 2: Playwright detail fallback for %s", tender_url)
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                try:
+                    page = await browser.new_page()
+                    page.set_default_timeout(60_000)
+                    await page.goto(tender_url, wait_until="load")
+                    await page.wait_for_timeout(750)
+                    text = (await page.locator("body").inner_text()).strip()
+                    links = await page.evaluate(
+                        """() => Array.from(document.querySelectorAll('a[href]'))
+                            .map((a) => {
+                                const text = (a.innerText || a.textContent || '').replace(/\\s+/g, ' ').trim();
+                                return { text, href: a.href };
+                            })
+                            .filter((item) => item.text && item.href)"""
+                    )
+                finally:
+                    await browser.close()
+
+            link_lines = []
+            for link in links:
+                label = str(link.get("text") or "").strip()
+                href = str(link.get("href") or "").strip()
+                if label and href.startswith("http"):
+                    link_lines.append(f"- {label}: {href}")
+            if link_lines:
+                text = f"{text}\n\nLinks:\n" + "\n".join(link_lines[:80])
+            if len(text) < 100:
+                logger.error("Playwright fallback returned minimal text for %s", tender_url)
+                return None
+            logger.info(
+                "Agent 2: Playwright fallback scraped %s characters from %s",
+                len(text),
+                tender_url,
+            )
+            return text
+        except Exception as exc:
+            logger.error("Playwright detail fallback failed for %s: %s", tender_url, exc)
             return None
     
     async def _extract_detailed_info_with_dates(self, page_content: str, 
@@ -182,15 +299,34 @@ Return ONLY the JSON object with no additional text.
             
             # Parse JSON response
             detailed_info = self._parse_detail_response(response_text)
-            
+
             if detailed_info:
+                from app.agents.portal_detail_hints import enrich_detail_from_page_markdown
+
+                detailed_info = enrich_detail_from_page_markdown(
+                    page_content, detailed_info, basic_tender
+                )
                 # Attach metadata for traceability & analytics
-                detailed_info['extracted_at'] = datetime.utcnow().isoformat()
-                detailed_info['page_content_length'] = len(page_content)
-                detailed_info['source_url'] = basic_tender.get('url')
-                
+                detailed_info["extracted_at"] = datetime.utcnow().isoformat()
+                detailed_info["page_content_length"] = len(page_content)
+                detailed_info["source_url"] = basic_tender.get("url")
+                if not detailed_info.get("full_content"):
+                    detailed_info["full_content"] = page_content[:400_000]
+
                 return detailed_info
             else:
+                from app.agents.portal_detail_hints import enrich_detail_from_page_markdown
+
+                heur = enrich_detail_from_page_markdown(page_content, {}, basic_tender)
+                if heur.get("detailed_title") or heur.get("deadline") or heur.get(
+                    "submission_deadline"
+                ):
+                    heur["extracted_at"] = datetime.utcnow().isoformat()
+                    heur["page_content_length"] = len(page_content)
+                    heur["source_url"] = basic_tender.get("url")
+                    heur["full_content"] = page_content[:400_000]
+                    heur["extraction_status"] = "heuristic"
+                    return heur
                 return None
                 
         except Exception as e:
@@ -203,86 +339,77 @@ Return ONLY the JSON object with no additional text.
         with special requirements about extracting and validating all dates, translating to English, and structuring the response as required JSON.
         Provides clear requirements and date handling logic.
         """
-        return f"""You are a professional opportunity analysis specialist.
-This is Phase 2 after checklist screening has already shortlisted opportunities.
-Extract comprehensive details with special focus on DATE VALIDATION.
+        return f"""You are Agent 2, a careful procurement detail extraction specialist.
+This is Phase 2 after a listing page identified a possible tender. Your job is to read the FULL TENDER PAGE CONTENT and extract only information supported by that content.
 
-CRITICAL DATE REQUIREMENTS:
-============================
-1. Extract ALL dates mentioned in the tender
-2. Identify publication date, submission deadline, project start/end dates
-3. Convert all dates to YYYY-MM-DD format
-4. Validate that deadlines are in the future (after {datetime.now().strftime('%Y-%m-%d')})
-5. Mark urgency level based on deadline proximity
+Return ONLY one valid JSON object. No markdown fences. No comments. No text before or after JSON.
+Use real JSON null for missing values. Never output placeholder strings such as "null", "N/A", "unknown", "not specified", "Issuing organization", or "Budget/estimated value".
 
-TRANSLATION REQUIREMENTS:
-=========================
-- TRANSLATE ALL non-English content to English
-- Maintain original meaning and context
-- Use clear, professional English
+CURRENT DATE: {datetime.now().strftime('%Y-%m-%d')}
 
-EXTRACTION REQUIREMENTS:
-========================
-Extract and return as JSON:
-
+OUTPUT SCHEMA:
 {{
-  "detailed_title": "Complete translated title",
-  "detailed_description": "Full translated description",
-  "requirements": "Technical requirements and qualifications",
-  
+  "detailed_title": "complete procurement title in English, or null",
+  "detailed_description": "2-5 sentence English summary of scope, buyer, location, and objective, or null",
+  "requirements": "eligibility, qualifications, technical requirements, submission instructions, and required experience, or null",
+
   "publication_date": "YYYY-MM-DD or null",
   "submission_deadline": "YYYY-MM-DD or null",
-  "deadline": "YYYY-MM-DD or null (primary deadline)",
+  "deadline": "YYYY-MM-DD or null",
   "project_start_date": "YYYY-MM-DD or null",
   "project_end_date": "YYYY-MM-DD or null",
-  
+
   "date_validation": {{
     "deadline_status": "active|expired|urgent|unknown",
     "days_until_deadline": number or null,
-    "urgency_level": "low|medium|high|expired",
-    "all_extracted_dates": ["YYYY-MM-DD", ...]
+    "urgency_level": "low|medium|high|urgent|expired",
+    "all_extracted_dates": ["YYYY-MM-DD"]
   }},
-  
-  "tender_value": "Budget/estimated value with currency",
-  "duration": "Project duration/timeline",
+
+  "tender_value": "amount/range with currency exactly as found, or null",
+  "duration": "contract/project duration or implementation timeline exactly as found, or null",
   "contact_info": {{
-    "organization": "Issuing organization",
-    "contact_person": "Contact person name",
-    "phone": "Phone number",
-    "email": "Email address",
-    "address": "Physical address"
+    "organization": "buyer/procuring entity/issuer, or null",
+    "contact_person": "named contact person, or null",
+    "phone": "phone number, or null",
+    "email": "email address, or null",
+    "address": "physical/postal address, or null"
   }},
-  "documents_required": "Required documents/certificates",
-  "evaluation_criteria": "Evaluation criteria",
-  "additional_details": "Other important information",
-  "tender_type": "Type of tender",
-  "procurement_method": "Procurement method",
-  "categories": "Relevant categories"
+  "documents_required": "bid documents, forms, certificates, proposal contents, or null",
+  "evaluation_criteria": "selection/evaluation method and criteria, or null",
+  "additional_details": "important fees, site visits, clarification dates, submission portal/instructions, lots, contract number, or null",
+  "tender_type": "RFQ|RFP|EOI|TOR|bid notice|consultancy|goods|works|services|grant|other, or null",
+  "procurement_method": "open tender, restricted, quotation, QCBS, CQS, direct procurement, etc., or null",
+  "categories": "comma-separated sectors/categories, or null"
 }}
 
-DATE EXTRACTION RULES:
-======================
-- Look for keywords: "deadline", "submission date", "closing date", "due date"
-- Look for: "срок подачи", "до", "крайний срок", "дедлайн"
-- Parse formats: DD.MM.YYYY, DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD
-- If deadline is past current date, mark as "expired"
-- If deadline is within 7 days, mark as "urgent"
-- If deadline is within 30 days, mark as "high" urgency
+DEADLINE RULES:
+- The primary "deadline" must be the final submission/closing/due date for bids, quotations, proposals, EOIs, or applications.
+- Look for labels such as: deadline, closing date, submission deadline, bid closing, due date, response deadline, proposal submission, application deadline, tender closing, offer validity, bid opening date.
+- If both a submission deadline and bid opening date exist, use the submission/closing deadline as "deadline"; keep opening-related information in "additional_details".
+- Do not use publication date, issue date, added date, page date, copyright date, or project start date as the deadline.
+- Normalize dates to YYYY-MM-DD. Handle formats like 22 May 2026, May 22, 2026, 22/05/2026, 22-05-2026, 2026-05-22, 28 Apr 2026 at 15:45.
+- Preserve all normalized dates you find in date_validation.all_extracted_dates.
+- deadline_status: expired if deadline is before CURRENT DATE; urgent if 0-7 days away; active if more than 7 days away; unknown when no deadline is found.
+- urgency_level: urgent for 0-7 days, high for 8-30 days, medium for 31-90 days, low for more than 90 days, expired for past deadlines.
 
-URGENCY LEVELS:
-===============
-- expired: Deadline has passed
-- urgent: Deadline within 7 days
-- high: Deadline within 30 days
-- medium: Deadline within 90 days
-- low: Deadline beyond 90 days
+BUDGET / VALUE RULES:
+- Extract monetary values from labels like budget, estimated value, contract value, bid amount, amount, price, fee, ceiling, financing, grant amount, consultancy fee.
+- Include currency and units exactly as shown, e.g. "UGX 120,000,000", "USD 50,000-75,000", "EUR 1.2 million".
+- If the tender says there is no stated budget, return null. Do not infer budget from unrelated financing amounts.
+- If multiple lots have separate values, summarize as "Lot 1: ...; Lot 2: ...".
 
-IMPORTANT:
-==========
-- Be comprehensive and accurate
-- All text must be in English
-- Focus on date accuracy and validation
-- If dates are unclear, mark as "unknown"
+CONTACT / ORGANIZATION RULES:
+- organization should be the procuring entity, client, buyer, issuer, ministry, agency, bank, NGO, or company issuing the opportunity.
+- Do not put a bidder/supplier name as organization unless the page is explicitly an award/bid opening result rather than an open opportunity.
+- Extract emails and phone numbers exactly when present.
+
+QUALITY RULES:
+- Translate non-English content to clear professional English.
+- Prefer specific evidence from the tender body over generic listing information.
+- Do not invent missing values. Use null.
+- If the page is a PDF/download notice, still extract from visible text and links.
+- Be concise but complete; do not copy the whole page into fields.
 """
     
     def _validate_extracted_dates(self, detailed_info: Dict[str, Any], 
@@ -372,7 +499,22 @@ IMPORTANT:
             if isinstance(date_value, datetime):
                 return date_value.date()
             
-            date_str = str(date_value)
+            date_str = str(date_value).strip()
+            if re.match(r"\d{4}-\d{2}-\d{2}[ T]\d", date_str):
+                for cut in (19, 16, 10):
+                    if len(date_str) < cut:
+                        continue
+                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                        try:
+                            return datetime.strptime(date_str[:cut], fmt).date()
+                        except ValueError:
+                            continue
+                try:
+                    return datetime.fromisoformat(
+                        date_str.replace("Z", "+00:00").split("+")[0]
+                    ).date()
+                except ValueError:
+                    pass
             for fmt in ['%Y-%m-%d', '%d.%m.%Y', '%d/%m/%Y', '%d-%m-%Y']:
                 try:
                     return datetime.strptime(date_str, fmt).date()
@@ -524,8 +666,21 @@ IMPORTANT:
                                 'processed_at': datetime.utcnow().isoformat()
                             }
                             detailed_results.append(combined_result)
+                    elif detailed_info.get('extraction_status') == 'failed':
+                        combined_result = {
+                            **tender,
+                            'detailed_info': detailed_info,
+                            'processing_status': 'failed',
+                            'processed_at': datetime.utcnow().isoformat()
+                        }
+                        detailed_results.append(combined_result)
+                        logger.warning(
+                            "Agent 2: extraction failed for %s: %s",
+                            tender.get("url"),
+                            detailed_info.get("error_message", "unknown"),
+                        )
                     else:
-                        # Detailed/valid tender result
+                        # Detailed/valid tender result (LLM ok or heuristic enrich)
                         combined_result = {
                             **tender,
                             'detailed_info': detailed_info,

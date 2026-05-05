@@ -7,6 +7,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 from langchain_core.messages import HumanMessage
 
+from app.core.config import settings
 from app.core.llm_factory import get_chat_llm
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ Return ONLY the JSON object with no additional text.
 This opportunity has already passed the Screening Checklist shortlist stage.
 
 Screening Checklist context to respect:
-- Step 1: 5 relevance checks, shortlisted when yes_count >= 3
+- Step 1: 5 relevance checks; recommended tier when yes_count >= 3 (emails target this tier)
 - Step 2: non-blocking flags (opportunity characteristics, strategic signals, potential concerns)
 - Step 3: baseline capture (title, source, country, type, deadline, estimated budget, link)
 
@@ -638,7 +639,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
                 </div>
                 
                 <div class="footer">
-                    <p>🤖 Automated notification from Tender Monitoring System v3.0</p>
+                    <p>🤖 Automated notification from {settings.APP_NAME} v3.0</p>
                     <p>Processed by Agent 1 (Extraction) → Agent 2 (Details) → Agent 3 (Email Composition)</p>
                     <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>
@@ -1036,7 +1037,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
                 </div>
                 
                 <div class="footer">
-                    <p>🤖 Automated notification from Tender Monitoring System v3.0</p>
+                    <p>🤖 Automated notification from {settings.APP_NAME} v3.0</p>
                     <p>Processed by Agent 1 (Extraction) → Agent 2 (Details) → Agent 3 (Email Composition)</p>
                     <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>

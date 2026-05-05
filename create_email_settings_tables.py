@@ -22,40 +22,40 @@ def create_email_settings_tables():
         # Initialize with default settings
         db = SessionLocal()
         try:
-            # Check if settings already exist
-            existing_esg = db.query(EmailNotificationSettings).filter(
-                EmailNotificationSettings.setting_key == 'esg_emails'
+            from app.repositories.email_settings_repository import EmailSettingsRepository
+
+            repo = EmailSettingsRepository()
+            repo.migrate_legacy_email_notification_settings(db)
+
+            existing_opportunity = db.query(EmailNotificationSettings).filter(
+                EmailNotificationSettings.setting_key == "opportunity_emails"
             ).first()
-            
-            if not existing_esg:
-                # Create default ESG emails setting
-                default_esg = EmailNotificationSettings(
-                    setting_key='esg_emails',
-                    setting_value=[],  # Start with empty list
-                    description='ESG team email addresses for notifications'
+            existing_prefs = db.query(EmailNotificationSettings).filter(
+                EmailNotificationSettings.setting_key == "preferences"
+            ).first()
+
+            if not existing_opportunity:
+                db.add(
+                    EmailNotificationSettings(
+                        setting_key="opportunity_emails",
+                        setting_value=[],
+                        description="Recipients for opportunity screening notifications",
+                    )
                 )
-                db.add(default_esg)
-                
-                # Create default Credit Rating emails setting
-                default_credit = EmailNotificationSettings(
-                    setting_key='credit_emails',
-                    setting_value=[],  # Start with empty list
-                    description='Credit Rating team email addresses for notifications'
+            if not existing_prefs:
+                db.add(
+                    EmailNotificationSettings(
+                        setting_key="preferences',
+                        setting_value={
+                            "send_for_new_tenders": True,
+                            "send_daily_summary": True,
+                            "send_urgent_notifications": True,
+                        },
+                        description="Email notification preferences and settings",
+                    )
                 )
-                db.add(default_credit)
-                
-                # Create default preferences
-                default_prefs = EmailNotificationSettings(
-                    setting_key='preferences',
-                    setting_value={
-                        "send_for_new_tenders": True,
-                        "send_daily_summary": True,
-                        "send_urgent_notifications": True
-                    },
-                    description='Email notification preferences and settings'
-                )
-                db.add(default_prefs)
-                
+
+            if not existing_opportunity or not existing_prefs:
                 db.commit()
                 logger.info("Default email settings initialized")
             else:
@@ -90,8 +90,7 @@ To use this migration:
 This will:
 - Create the EmailNotificationSettings table
 - Create the EmailNotificationLog table  
-- Initialize default empty email lists for ESG and Credit Rating teams
-- Set default notification preferences to True
+- Initialize default rows for opportunity_emails (empty list) and preferences
 
 After running this, your email settings will be stored in the database and 
 the web interface will work with persistent data.

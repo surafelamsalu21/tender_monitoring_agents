@@ -19,7 +19,16 @@ class MonitoredPage(Base):
     # Monitoring settings
     is_active = Column(Boolean, default=True, index=True)
     crawl_frequency_hours = Column(Integer, default=3)  # How often to crawl this page
-    
+    # crawl4ai | playwright | hybrid — see ideas/crawl-agent-next-build-spec.md
+    crawl_strategy = Column(String(32), nullable=False, default="crawl4ai", index=True)
+
+    # Playwright auth (per-page overrides; secrets live only in env vars named below)
+    auth_login_url = Column(String(1000), nullable=True)
+    auth_username_env = Column(String(128), nullable=True)
+    auth_password_env = Column(String(128), nullable=True)
+    # JSON: {"username":"#email","password":"#pass","submit":"button.login"} — optional
+    auth_form_selectors_json = Column(Text, nullable=True)
+
     # Status tracking
     last_crawled = Column(DateTime, nullable=True, index=True)
     last_successful_crawl = Column(DateTime, nullable=True)

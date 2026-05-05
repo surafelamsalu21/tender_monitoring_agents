@@ -2,6 +2,7 @@
 Tender API Routes
 CRUD operations for tenders
 """
+import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -25,6 +26,55 @@ def _deadline_calendar_date(dt: Optional[datetime]) -> Optional[date]:
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).date()
     return dt.date()
+
+
+_PLACEHOLDER_VALUES = {
+    "null",
+    "none",
+    "n/a",
+    "na",
+    "unknown",
+    "not specified",
+    "not available",
+    "not provided",
+    "not stated",
+    "budget/estimated value",
+    "budget/estimated value with currency",
+    "project duration/timeline",
+    "issuing organization",
+    "contact person name",
+    "phone number",
+    "email address",
+    "physical address",
+    "other important information",
+}
+
+
+def _clean_api_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {key: _clean_api_value(item) for key, item in value.items()}
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.lower() in _PLACEHOLDER_VALUES:
+            return None
+        return value
+    return value
+
+
+def _clean_contact_info_for_api(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return _clean_api_value(value)
+    cleaned = _clean_api_value(value)
+    if isinstance(cleaned, dict) and not any(cleaned.values()):
+        return None
+    return cleaned
 
 
 def serialize_detailed_info(detailed: DetailedTender) -> Dict[str, Any]:
@@ -55,14 +105,14 @@ def serialize_detailed_info(detailed: DetailedTender) -> Dict[str, Any]:
             dv.setdefault("urgency_level", dv.get("urgency_level") or "low")
 
     result: Dict[str, Any] = {
-        "detailed_title": detailed.detailed_title,
-        "detailed_description": detailed.detailed_description,
-        "requirements": detailed.requirements,
+        "detailed_title": _clean_api_value(detailed.detailed_title),
+        "detailed_description": _clean_api_value(detailed.detailed_description),
+        "requirements": _clean_api_value(detailed.requirements),
         "deadline": deadline_iso,
-        "tender_value": detailed.tender_value,
-        "duration": detailed.duration,
-        "contact_info": detailed.contact_info,
-        "additional_details": detailed.additional_details,
+        "tender_value": _clean_api_value(detailed.tender_value),
+        "duration": _clean_api_value(detailed.duration),
+        "contact_info": _clean_contact_info_for_api(detailed.contact_info),
+        "additional_details": _clean_api_value(detailed.additional_details),
         "processing_status": detailed.processing_status,
         "processed_at": detailed.processed_at.isoformat() if detailed.processed_at else None,
     }
@@ -170,14 +220,28 @@ async def get_tender_stats(db: Session = Depends(get_db)):
 
     unnotified = db.query(Tender).filter(Tender.is_notified == False).count()
 
+    low_match_screening = failed_screening  # passes_screening False = 1–2 YES (not a failure — marginal fit)
+
     return {
         "total_tenders": total_tenders,
         "passed_screening": passed_screening,
         "failed_screening": failed_screening,
+        "recommended_screening": passed_screening,
+        "low_match_screening": low_match_screening,
         "recent_tenders_7_days": recent_tenders,
         "unnotified_tenders": unnotified,
         "last_updated": datetime.utcnow().isoformat(),
     }
+
+
+@router.delete("/{tender_id}")
+async def delete_tender(tender_id: int, db: Session = Depends(get_db)):
+    """Delete a tender (and its detailed information) by ID."""
+    tender_repo = TenderRepository()
+    deleted = tender_repo.delete_tender(db, tender_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Tender not found")
+    return {"success": True, "tender_id": tender_id}
 
 
 @router.get("/{tender_id}")

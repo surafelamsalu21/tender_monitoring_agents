@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, Globe, Edit, Trash2, Power, PowerOff } from 'lucide-react';
+import { Plus, Globe, Trash2, Power, PowerOff } from 'lucide-react';
 import { Page } from '../types';
 import { apiService } from '../services/api';
 
@@ -10,14 +10,17 @@ interface PageManagerProps {
 
 export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) => {
   const [showAddForm, setShowAddForm] = useState(false);
-  const [newPage, setNewPage] = useState({ url: '', name: '' });
-  const [editingPage, setEditingPage] = useState<Page | null>(null);
+  const [newPage, setNewPage] = useState<{
+    url: string;
+    name: string;
+    crawl_strategy: 'crawl4ai' | 'playwright' | 'hybrid';
+  }>({ url: '', name: '', crawl_strategy: 'crawl4ai' });
 
   const handleAddPage = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       await apiService.createPage(newPage);
-      setNewPage({ url: '', name: '' });
+      setNewPage({ url: '', name: '', crawl_strategy: 'crawl4ai' });
       setShowAddForm(false);
       onRefresh();
     } catch (error) {
@@ -31,6 +34,15 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
       onRefresh();
     } catch (error) {
       console.error('Failed to update page:', error);
+    }
+  };
+
+  const handleStrategyChange = async (page: Page, strategy: string) => {
+    try {
+      await apiService.updatePage(page.id, { crawl_strategy: strategy as Page['crawl_strategy'] });
+      onRefresh();
+    } catch (error) {
+      console.error('Failed to update strategy:', error);
     }
   };
 
@@ -60,7 +72,7 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
         <h2 className="text-2xl font-bold text-gray-900">Page Management</h2>
         <button
           onClick={() => setShowAddForm(true)}
-          className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          className="flex items-center px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
         >
           <Plus className="h-4 w-4 mr-2" />
           Add Page
@@ -80,7 +92,7 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
                 type="text"
                 value={newPage.name}
                 onChange={(e) => setNewPage({ ...newPage, name: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                 placeholder="e.g., Uzbekistan Airways Tenders"
                 required
               />
@@ -93,15 +105,41 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
                 type="url"
                 value={newPage.url}
                 onChange={(e) => setNewPage({ ...newPage, url: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                 placeholder="https://example.com/tenders"
                 required
               />
+              <p className="mt-1 text-xs text-gray-500">
+                For UNDP Africa: use <code>https://procurement-notices.undp.org/?region=RAF</code> + Playwright.
+                For EU Funding Portal: use Playwright (the site is a JavaScript SPA).
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Crawl Strategy
+              </label>
+              <select
+                value={newPage.crawl_strategy}
+                onChange={(e) =>
+                  setNewPage({
+                    ...newPage,
+                    crawl_strategy: e.target.value as 'crawl4ai' | 'playwright' | 'hybrid',
+                  })
+                }
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+                <option value="crawl4ai">crawl4ai</option>
+                <option value="playwright">playwright</option>
+                <option value="hybrid">hybrid</option>
+              </select>
+              <p className="mt-1 text-xs text-gray-500">
+                Use <strong>Playwright</strong> for JavaScript SPAs (EU Funding Portal, UNDP) and pages requiring filter/login interaction.
+              </p>
             </div>
             <div className="flex gap-3">
               <button
                 type="submit"
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
               >
                 Add Page
               </button>
@@ -109,7 +147,7 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
                 type="button"
                 onClick={() => {
                   setShowAddForm(false);
-                  setNewPage({ url: '', name: '' });
+                  setNewPage({ url: '', name: '', crawl_strategy: 'crawl4ai' });
                 }}
                 className="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors"
               >
@@ -144,9 +182,20 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
                     </span>
                   </div>
                   <p className="text-sm text-gray-600 mb-2 break-all">{page.url}</p>
-                  <p className="text-xs text-gray-500">
-                    Added: {formatDate(page.created_at)}
-                  </p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-xs text-gray-500">Added: {formatDate(page.created_at)}</span>
+                    <span className="text-xs text-gray-400">•</span>
+                    <label className="text-xs text-gray-500 font-medium">Strategy:</label>
+                    <select
+                      value={page.crawl_strategy || 'crawl4ai'}
+                      onChange={(e) => handleStrategyChange(page, e.target.value)}
+                      className="text-xs border border-gray-200 rounded px-1.5 py-0.5 text-gray-700 bg-gray-50 focus:ring-1 focus:ring-primary-500"
+                    >
+                      <option value="crawl4ai">crawl4ai</option>
+                      <option value="playwright">playwright</option>
+                      <option value="hybrid">hybrid</option>
+                    </select>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <button

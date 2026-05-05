@@ -1,4 +1,5 @@
 crawl4ai
+playwright>=1.40.0
 langgraph
 langchain
 langchain-openai

@@ -14,9 +14,47 @@ logger = logging.getLogger(__name__)
 
 from app.models.tender import Tender, DetailedTender
 from app.models.keyword import Keyword
+from app.models.page import MonitoredPage
 
 class TenderRepository:
     """Enhanced repository for tender database operations with keyword tracking"""
+
+    @staticmethod
+    def _normalize_url(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        return str(value).strip().rstrip("/")
+
+    def _is_listing_page_url(self, db: Session, page_id: int, url: str) -> bool:
+        """True when the row URL is just the monitored listing page, not a notice URL."""
+        normalized = self._normalize_url(url)
+        if not normalized:
+            return False
+        page = db.query(MonitoredPage.url).filter(MonitoredPage.id == page_id).first()
+        if not page:
+            return False
+        return normalized == self._normalize_url(page[0])
+
+    @staticmethod
+    def _prefer_detail_url(existing_url: Optional[str], incoming_url: str) -> str:
+        """
+        When dedup returns an older row, its URL may still point at the listing page while
+        the pipeline now has the per-notice URL. Prefer the more specific path so DB2 URL
+        matching and the UI link stay correct.
+        """
+        if not incoming_url or not str(incoming_url).strip():
+            return (existing_url or "").strip()
+        if not existing_url or not str(existing_url).strip():
+            return str(incoming_url).strip()
+        ex = str(existing_url).rstrip("/")
+        inc = str(incoming_url).rstrip("/")
+        if ex == inc:
+            return ex
+        if "/bid/notice/" in inc and "/bid/notice/" not in ex:
+            return inc
+        if inc.count("/") > ex.count("/") and len(inc) > len(ex) + 5:
+            return inc
+        return ex
 
     @staticmethod
     def _normalize_text(value: Optional[str]) -> str:
@@ -24,6 +62,52 @@ class TenderRepository:
             return ""
         cleaned = re.sub(r"\s+", " ", str(value)).strip().lower()
         return cleaned
+
+    _PLACEHOLDER_VALUES = {
+        "null",
+        "none",
+        "n/a",
+        "na",
+        "unknown",
+        "not specified",
+        "not available",
+        "not provided",
+        "not stated",
+        "no information",
+        "no information provided",
+        "budget/estimated value",
+        "budget/estimated value with currency",
+        "project duration/timeline",
+        "issuing organization",
+        "contact person name",
+        "phone number",
+        "email address",
+        "physical address",
+        "other important information",
+        "relevant categories",
+    }
+
+    @classmethod
+    def _clean_optional_text(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text_value = str(value).strip()
+        if not text_value:
+            return None
+        normalized = re.sub(r"\s+", " ", text_value).strip().lower()
+        if normalized in cls._PLACEHOLDER_VALUES:
+            return None
+        return text_value
+
+    @classmethod
+    def _clean_contact_info(cls, value: Any) -> Optional[Any]:
+        if isinstance(value, dict):
+            cleaned = {
+                key: cls._clean_optional_text(item)
+                for key, item in value.items()
+            }
+            return cleaned if any(v for v in cleaned.values()) else None
+        return cls._clean_optional_text(value)
 
     def build_opportunity_fingerprint(
         self,
@@ -95,11 +179,35 @@ class TenderRepository:
             # Avoid saving duplicate tenders (opportunity identity).
             existing = db.query(Tender).filter(Tender.opportunity_fingerprint == fingerprint).first()
             if existing:
+                merged_url = self._prefer_detail_url(existing.url, url)
+                prev = (existing.url or "").strip().rstrip("/")
+                if merged_url.rstrip("/") != prev:
+                    existing.url = merged_url
+                    db.commit()
+                    db.refresh(existing)
                 logger.info(f"Tender already exists: {title[:50]}...")
                 return existing
+
+            # Detail URLs are the most stable identity when Agent 1 changes title/source wording.
+            normalized_url = self._normalize_url(url)
+            if normalized_url and not self._is_listing_page_url(db, page_id, normalized_url):
+                existing_by_url = db.query(Tender).filter(
+                    and_(
+                        Tender.page_id == page_id,
+                        Tender.url.in_([normalized_url, f"{normalized_url}/"]),
+                    )
+                ).first()
+                if existing_by_url:
+                    logger.info("Tender already exists by URL: %s", normalized_url)
+                    return existing_by_url
             
             step1 = screening_result.get("step1", {}) if screening_result else {}
-            step2 = screening_result.get("step2", {}) if screening_result else {}
+            step2_raw = screening_result.get("step2", {}) if screening_result else {}
+            step2: Dict[str, Any] = dict(step2_raw) if isinstance(step2_raw, dict) else {}
+            if screening_result:
+                lang = screening_result.get("source_language")
+                if isinstance(lang, str) and lang.strip():
+                    step2["source_language"] = lang.strip()[:32].lower()
             step3 = screening_result.get("step3", {}) if screening_result else {}
             yes_count = int(screening_result.get("yes_count", 0)) if screening_result else 0
             passes_screening = bool(screening_result.get("passes_filter", False)) if screening_result else False
@@ -108,7 +216,7 @@ class TenderRepository:
             # Create the new Tender object.
             tender = Tender(
                 title=title,
-                url=url,
+                url=normalized_url or url,
                 opportunity_fingerprint=fingerprint,
                 tender_date=parsed_date,
                 category=category or "legacy",
@@ -201,21 +309,27 @@ class TenderRepository:
                 logger.info(f"Updating existing detailed tender for tender_id {tender_id}")
                 return self._update_existing_detailed_tender(db, existing, detailed_info)
             
-            detailed_title = str(detailed_info.get('detailed_title', '')) if detailed_info.get('detailed_title') else ''
-            detailed_description = str(detailed_info.get('detailed_description', '')) if detailed_info.get('detailed_description') else ''
+            detailed_title = self._clean_optional_text(detailed_info.get('detailed_title')) or ''
+            detailed_description = self._clean_optional_text(detailed_info.get('detailed_description')) or ''
             
             # Handle requirements list/str/None.
             requirements = detailed_info.get('requirements')
             if isinstance(requirements, list):
-                requirements_str = '\n'.join([str(req) for req in requirements])
+                requirements_str = '\n'.join(
+                    [
+                        item
+                        for item in (self._clean_optional_text(req) for req in requirements)
+                        if item
+                    ]
+                ) or None
             elif requirements:
-                requirements_str = str(requirements)
+                requirements_str = self._clean_optional_text(requirements)
             else:
                 requirements_str = None
             
             deadline = self._parse_deadline(detailed_info.get('deadline'))
             
-            contact_info = detailed_info.get('contact_info')
+            contact_info = self._clean_contact_info(detailed_info.get('contact_info'))
             if isinstance(contact_info, dict):
                 contact_info_str = json.dumps(contact_info)
             elif contact_info:
@@ -229,24 +343,18 @@ class TenderRepository:
             else:
                 date_validation_str = None
 
-            tender_value = (
-                str(detailed_info.get('tender_value')).strip()
-                if detailed_info.get('tender_value')
-                else None
-            )
-            duration = (
-                str(detailed_info.get('duration')).strip()
-                if detailed_info.get('duration')
-                else None
-            )
+            tender_value = self._clean_optional_text(detailed_info.get('tender_value'))
+            duration = self._clean_optional_text(detailed_info.get('duration'))
             if not tender_value or not duration:
                 inferred_value, inferred_duration = self._infer_value_and_duration_from_text(
                     detailed_description=detailed_description,
-                    additional_details=str(detailed_info.get('additional_details', '')) if detailed_info.get('additional_details') else None,
+                    additional_details=self._clean_optional_text(detailed_info.get('additional_details')),
                     full_content=str(detailed_info.get('full_content', '')) if detailed_info.get('full_content') else None,
                 )
                 tender_value = tender_value or inferred_value
                 duration = duration or inferred_duration
+
+            additional_details = self._clean_optional_text(detailed_info.get('additional_details'))
             
             # Compose the new DetailedTender
             detailed_tender = DetailedTender(
@@ -258,7 +366,7 @@ class TenderRepository:
                 tender_value=tender_value,
                 duration=duration,
                 contact_info=contact_info_str,
-                additional_details=str(detailed_info.get('additional_details', '')) if detailed_info.get('additional_details') else None,
+                additional_details=additional_details,
                 full_content=str(detailed_info.get('full_content', '')) if detailed_info.get('full_content') else '',
                 processing_status="processed",
                 date_validation=date_validation_str,
@@ -270,7 +378,10 @@ class TenderRepository:
             if db_tender:
                 db_tender.is_processed = True
                 db_tender.updated_at = datetime.utcnow()
-            
+                self._maybe_upgrade_tender_title_from_detail(
+                    db, tender_id, detailed_title or None
+                )
+
             db.add(detailed_tender)
             db.commit()
             db.refresh(detailed_tender)
@@ -293,35 +404,48 @@ class TenderRepository:
         - Commits the change.
         """
         try:
-            if detailed_info.get('detailed_title'):
-                existing.detailed_title = str(detailed_info['detailed_title'])
-            if detailed_info.get('detailed_description'):
-                existing.detailed_description = str(detailed_info['detailed_description'])
+            detailed_title = self._clean_optional_text(detailed_info.get('detailed_title'))
+            if detailed_title:
+                existing.detailed_title = detailed_title
+            detailed_description = self._clean_optional_text(detailed_info.get('detailed_description'))
+            if detailed_description:
+                existing.detailed_description = detailed_description
             
             # Requirements update
             if detailed_info.get('requirements'):
                 requirements = detailed_info['requirements']
                 if isinstance(requirements, list):
-                    existing.requirements = '\n'.join([str(req) for req in requirements])
+                    existing.requirements = '\n'.join(
+                        [
+                            item
+                            for item in (self._clean_optional_text(req) for req in requirements)
+                            if item
+                        ]
+                    )
                 else:
-                    existing.requirements = str(requirements)
+                    cleaned_requirements = self._clean_optional_text(requirements)
+                    if cleaned_requirements:
+                        existing.requirements = cleaned_requirements
             
             # Contact info update
             if detailed_info.get('contact_info'):
-                contact_info = detailed_info['contact_info']
+                contact_info = self._clean_contact_info(detailed_info['contact_info'])
                 if isinstance(contact_info, dict):
                     existing.contact_info = json.dumps(contact_info)
-                else:
+                elif contact_info:
                     existing.contact_info = str(contact_info)
             
-            if detailed_info.get('additional_details'):
-                existing.additional_details = str(detailed_info['additional_details'])
+            additional_details = self._clean_optional_text(detailed_info.get('additional_details'))
+            if additional_details:
+                existing.additional_details = additional_details
             if detailed_info.get('full_content'):
                 existing.full_content = str(detailed_info['full_content'])
-            if detailed_info.get('tender_value'):
-                existing.tender_value = str(detailed_info['tender_value']).strip()
-            if detailed_info.get('duration'):
-                existing.duration = str(detailed_info['duration']).strip()
+            tender_value = self._clean_optional_text(detailed_info.get('tender_value'))
+            if tender_value:
+                existing.tender_value = tender_value
+            duration = self._clean_optional_text(detailed_info.get('duration'))
+            if duration:
+                existing.duration = duration
             
             # Deadline/date validation
             if detailed_info.get('deadline'):
@@ -344,7 +468,12 @@ class TenderRepository:
             existing.updated_at = datetime.utcnow()
             existing.processed_at = datetime.utcnow()
             existing.processing_status = "processed"
-            
+
+            if detailed_title:
+                self._maybe_upgrade_tender_title_from_detail(
+                    db, existing.tender_id, detailed_title
+                )
+
             db.commit()
             return existing
             
@@ -402,24 +531,71 @@ class TenderRepository:
         """
         if not deadline_value:
             return None
-        
+
         try:
             if isinstance(deadline_value, datetime):
                 return deadline_value
-            
-            deadline_str = str(deadline_value)
-            for fmt in ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f', '%d.%m.%Y', '%d/%m/%Y']:
+
+            deadline_str = str(deadline_value).strip()
+            if deadline_str.lower() in ("null", "n/a", "none", ""):
+                return None
+
+            # ISO-8601 datetime (e.g. 2026-04-28T15:45:00)
+            if "T" in deadline_str and re.match(r"\d{4}-\d{2}-\d{2}T", deadline_str):
+                try:
+                    iso = deadline_str.replace("Z", "+00:00")
+                    return datetime.fromisoformat(iso)
+                except ValueError:
+                    try:
+                        return datetime.fromisoformat(deadline_str.split("+")[0].split(".")[0])
+                    except ValueError:
+                        pass
+
+            human_opening = (
+                "%d %b %Y at %H:%M",
+                "%d %B %Y at %H:%M",
+            )
+            fmts = [
+                "%Y-%m-%d",
+                "%Y-%m-%d %H:%M",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M:%S.%f",
+                "%d.%m.%Y",
+                "%d/%m/%Y",
+            ] + list(human_opening)
+
+            for fmt in fmts:
                 try:
                     return datetime.strptime(deadline_str, fmt)
                 except ValueError:
                     continue
-            
+
             logger.warning(f"Could not parse deadline: {deadline_value}")
             return None
-            
+
         except Exception as e:
             logger.warning(f"Deadline parsing error: {e}")
             return None
+
+    def _maybe_upgrade_tender_title_from_detail(
+        self,
+        db: Session,
+        tender_id: int,
+        detailed_title: Optional[str],
+    ) -> None:
+        """Replace ref-number-only list titles with the real subject when Agent 2 provides it."""
+        if not detailed_title:
+            return
+        try:
+            from app.agents.portal_detail_hints import title_upgrade_warranted
+        except Exception:
+            return
+        t = db.query(Tender).filter(Tender.id == tender_id).first()
+        if not t or not title_upgrade_warranted(t.title, detailed_title):
+            return
+        dt = str(detailed_title).strip()
+        t.title = dt[:500]
+        t.updated_at = datetime.utcnow()
     
     def get_unnotified_tenders(self, db: Session, only_passed: bool = True) -> List[Tender]:
         """
@@ -470,7 +646,7 @@ class TenderRepository:
             stats = {
                 'total_keywords_used': len(keywords_with_usage),
                 'top_keywords': [],
-                'category_breakdown': {'esg': 0, 'credit_rating': 0},
+                'category_breakdown': {},
                 'total_keyword_matches': sum(kw.usage_count for kw in keywords_with_usage)
             }
             
@@ -485,10 +661,12 @@ class TenderRepository:
                 for kw in sorted_keywords[:10]
             ]
             
-            # Build per-category breakdown
+            # Build per-category breakdown (sector, activity_fit, geography, source_tag, ...)
             for kw in keywords_with_usage:
-                if kw.category in stats['category_breakdown']:
-                    stats['category_breakdown'][kw.category] += kw.usage_count
+                cat = kw.category or "uncategorized"
+                stats["category_breakdown"][cat] = (
+                    stats["category_breakdown"].get(cat, 0) + kw.usage_count
+                )
             
             return stats
             
@@ -533,6 +711,27 @@ class TenderRepository:
         Get a tender by its unique database ID.
         """
         return db.query(Tender).filter(Tender.id == tender_id).first()
+
+    def delete_tender(self, db: Session, tender_id: int) -> bool:
+        """
+        Delete a tender by ID. The DetailedTender row (if any) is removed via
+        the configured cascade on the relationship.
+
+        Returns True on success, False if no tender with that ID exists.
+        """
+        tender = db.query(Tender).filter(Tender.id == tender_id).first()
+        if not tender:
+            return False
+        try:
+            tender.matched_keywords.clear()
+            db.delete(tender)
+            db.commit()
+            logger.info("Deleted tender id=%s title=%r", tender_id, tender.title[:80])
+            return True
+        except Exception as exc:
+            db.rollback()
+            logger.error("Failed to delete tender id=%s: %s", tender_id, exc)
+            raise
     
     def get_detailed_tender_by_tender_id(self, db: Session, tender_id: int) -> Optional[DetailedTender]:
         """
@@ -566,6 +765,18 @@ class TenderRepository:
         ).first()
         if existing_by_fingerprint:
             return True
+
+        # Same detail URL means same notice, even if the LLM extracted a shorter title/source.
+        normalized_url = self._normalize_url(url)
+        if normalized_url and not self._is_listing_page_url(db, page_id, normalized_url):
+            existing_by_url = db.query(Tender).filter(
+                and_(
+                    Tender.page_id == page_id,
+                    Tender.url.in_([normalized_url, f"{normalized_url}/"]),
+                )
+            ).first()
+            if existing_by_url:
+                return True
 
         # Fallback: exact title + same page + same tender date (if available)
         normalized_tender_date = None

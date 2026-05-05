@@ -1,5 +1,7 @@
 # Ideas: Authenticated Crawling and Pagination Strategy
 
+**Next build (concrete spec):** See [crawl-agent-next-build-spec.md](./crawl-agent-next-build-spec.md) for the `app/crawl/` package, scheduler changes, phases, and `HarvestResult` contract.
+
 ## Why this note
 
 Many tender and procurement sources require authentication, and many also use pagination or infinite listing pages.  

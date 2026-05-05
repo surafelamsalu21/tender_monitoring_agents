@@ -17,8 +17,7 @@ import {
 import { apiService } from '../services/api';
 
 interface EmailNotificationSettings {
-  esg_emails: string[];
-  credit_rating_emails: string[];
+  opportunity_emails: string[];
   notification_preferences: {
     send_for_new_tenders: boolean;
     send_daily_summary: boolean;
@@ -31,8 +30,7 @@ export const Settings: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [emailSettings, setEmailSettings] = useState<EmailNotificationSettings>({
-    esg_emails: [],
-    credit_rating_emails: [],
+    opportunity_emails: [],
     notification_preferences: {
       send_for_new_tenders: true,
       send_daily_summary: true,
@@ -41,8 +39,7 @@ export const Settings: React.FC = () => {
   });
   
   // Email form states
-  const [newEsgEmail, setNewEsgEmail] = useState('');
-  const [newCreditEmail, setNewCreditEmail] = useState('');
+  const [newRecipientEmail, setNewRecipientEmail] = useState('');
   const [emailErrors, setEmailErrors] = useState<{ [key: string]: string }>({});
   const [isSaving, setIsSaving] = useState(false);
   const [testingEmail, setTestingEmail] = useState<string | null>(null);
@@ -82,8 +79,7 @@ export const Settings: React.FC = () => {
       if (response.success && response.settings) {
         console.log('Setting email settings from API:', response.settings);
         setEmailSettings({
-          esg_emails: response.settings.opportunity_emails || response.settings.esg_emails || [],
-          credit_rating_emails: response.settings.credit_rating_emails || [],
+          opportunity_emails: response.settings.opportunity_emails ?? [],
           notification_preferences: response.settings.notification_preferences || {
             send_for_new_tenders: true,
             send_daily_summary: true,
@@ -94,8 +90,7 @@ export const Settings: React.FC = () => {
         console.warn('API returned unsuccessful response or missing settings:', response);
         // Use default settings if API returns unsuccessful
         setEmailSettings({
-          esg_emails: [],
-          credit_rating_emails: [],
+          opportunity_emails: [],
           notification_preferences: {
             send_for_new_tenders: true,
             send_daily_summary: true,
@@ -107,8 +102,7 @@ export const Settings: React.FC = () => {
       console.error('Error loading email settings:', error);
       // Fallback to default settings on any error
       setEmailSettings({
-        esg_emails: [],
-        credit_rating_emails: [],
+        opportunity_emails: [],
         notification_preferences: {
           send_for_new_tenders: true,
           send_daily_summary: true,
@@ -134,182 +128,76 @@ export const Settings: React.FC = () => {
     return emailRegex.test(email);
   };
 
-  const addEsgEmail = async () => {
-    if (!newEsgEmail.trim()) {
-      setEmailErrors({ ...emailErrors, esg: 'Email is required' });
+  const addRecipientEmail = async () => {
+    if (!newRecipientEmail.trim()) {
+      setEmailErrors({ ...emailErrors, recipients: 'Email is required' });
       return;
     }
-    
-    if (!validateEmail(newEsgEmail)) {
-      setEmailErrors({ ...emailErrors, esg: 'Please enter a valid email address' });
+
+    if (!validateEmail(newRecipientEmail)) {
+      setEmailErrors({ ...emailErrors, recipients: 'Please enter a valid email address' });
       return;
     }
-    
-    if (emailSettings.esg_emails.includes(newEsgEmail)) {
-      setEmailErrors({ ...emailErrors, esg: 'Email already exists' });
+
+    if (emailSettings.opportunity_emails.includes(newRecipientEmail)) {
+      setEmailErrors({ ...emailErrors, recipients: 'Email already exists' });
       return;
     }
-    
+
     try {
-      console.log('Adding ESG email:', newEsgEmail);
-      
-      // First, optimistically update the local state
       const updatedSettings = {
         ...emailSettings,
-        esg_emails: [...emailSettings.esg_emails, newEsgEmail]
+        opportunity_emails: [...emailSettings.opportunity_emails, newRecipientEmail],
       };
-      
-      // Save the entire settings object to the backend
+
       const saveResponse = await apiService.saveEmailSettings(updatedSettings);
-      console.log('Save email settings response:', saveResponse);
-      
+
       if (saveResponse.success) {
-        // Update local state only after successful API call
         setEmailSettings(updatedSettings);
-        setNewEsgEmail('');
-        setEmailErrors({ ...emailErrors, esg: '' });
-        console.log('ESG email added successfully');
-        
-        // Refresh settings from backend to ensure consistency
+        setNewRecipientEmail('');
+        setEmailErrors({ ...emailErrors, recipients: '' });
         await loadEmailSettings();
       } else {
-        setEmailErrors({ ...emailErrors, esg: `Failed to add email: ${saveResponse.message}` });
+        setEmailErrors({
+          ...emailErrors,
+          recipients: `Failed to add email: ${saveResponse.message}`,
+        });
       }
     } catch (error) {
-      console.error('Error adding ESG email:', error);
-      setEmailErrors({ ...emailErrors, esg: 'Failed to add email. Please try again.' });
+      console.error('Error adding recipient email:', error);
+      setEmailErrors({ ...emailErrors, recipients: 'Failed to add email. Please try again.' });
     }
   };
 
-  const addCreditEmail = async () => {
-    if (!newCreditEmail.trim()) {
-      setEmailErrors({ ...emailErrors, credit: 'Email is required' });
-      return;
-    }
-    
-    if (!validateEmail(newCreditEmail)) {
-      setEmailErrors({ ...emailErrors, credit: 'Please enter a valid email address' });
-      return;
-    }
-    
-    if (emailSettings.credit_rating_emails.includes(newCreditEmail)) {
-      setEmailErrors({ ...emailErrors, credit: 'Email already exists' });
-      return;
-    }
-    
-    try {
-      console.log('Adding Credit email:', newCreditEmail);
-      
-      // First, optimistically update the local state
-      const updatedSettings = {
-        ...emailSettings,
-        credit_rating_emails: [...emailSettings.credit_rating_emails, newCreditEmail]
-      };
-      
-      // Save the entire settings object to the backend
-      const saveResponse = await apiService.saveEmailSettings(updatedSettings);
-      console.log('Save credit email settings response:', saveResponse);
-      
-      if (saveResponse.success) {
-        // Update local state only after successful API call
-        setEmailSettings(updatedSettings);
-        setNewCreditEmail('');
-        setEmailErrors({ ...emailErrors, credit: '' });
-        console.log('Credit email added successfully');
-        
-        // Refresh settings from backend to ensure consistency
-        await loadEmailSettings();
-      } else {
-        setEmailErrors({ ...emailErrors, credit: `Failed to add email: ${saveResponse.message}` });
-      }
-    } catch (error) {
-      console.error('Error adding Credit email:', error);
-      setEmailErrors({ ...emailErrors, credit: 'Failed to add email. Please try again.' });
-    }
-  };
-
-  const removeEsgEmail = async (emailToRemove: string) => {
+  const removeRecipientEmail = async (emailToRemove: string) => {
     if (processingEmails.has(emailToRemove)) {
-      console.log('Email removal already in progress:', emailToRemove);
       return;
     }
-    
+
     try {
-      console.log('Removing ESG email:', emailToRemove);
-      setProcessingEmails(prev => new Set(prev).add(emailToRemove));
-      
-      // Update local state optimistically
+      setProcessingEmails((prev) => new Set(prev).add(emailToRemove));
+
       const updatedSettings = {
         ...emailSettings,
-        esg_emails: emailSettings.esg_emails.filter(email => email !== emailToRemove)
+        opportunity_emails: emailSettings.opportunity_emails.filter((e) => e !== emailToRemove),
       };
-      
-      // Save the entire settings object to the backend
+
       const saveResponse = await apiService.saveEmailSettings(updatedSettings);
-      console.log('Remove ESG email settings response:', saveResponse);
-      
+
       if (saveResponse.success) {
-        // Update local state only after successful API call
         setEmailSettings(updatedSettings);
-        console.log('ESG email removed successfully');
-        
-        // Refresh settings from backend to ensure consistency
         await loadEmailSettings();
       } else {
-        console.error('Failed to remove email via API:', saveResponse.message);
         alert(`Failed to remove email: ${saveResponse.message}`);
       }
     } catch (error) {
-      console.error('Error removing ESG email:', error);
+      console.error('Error removing recipient email:', error);
       alert('Failed to remove email. Please try again.');
     } finally {
-      setProcessingEmails(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(emailToRemove);
-        return newSet;
-      });
-    }
-  };
-
-  const removeCreditEmail = async (emailToRemove: string) => {
-    if (processingEmails.has(emailToRemove)) {
-      console.log('Email removal already in progress:', emailToRemove);
-      return;
-    }
-    
-    try {
-      console.log('Removing Credit email:', emailToRemove);
-      setProcessingEmails(prev => new Set(prev).add(emailToRemove));
-      
-      // Update local state optimistically
-      const updatedSettings = {
-        ...emailSettings,
-        credit_rating_emails: emailSettings.credit_rating_emails.filter(email => email !== emailToRemove)
-      };
-      
-      // Save the entire settings object to the backend
-      const saveResponse = await apiService.saveEmailSettings(updatedSettings);
-      console.log('Remove credit email settings response:', saveResponse);
-      
-      if (saveResponse.success) {
-        // Update local state only after successful API call
-        setEmailSettings(updatedSettings);
-        console.log('Credit email removed successfully');
-        
-        // Refresh settings from backend to ensure consistency
-        await loadEmailSettings();
-      } else {
-        console.error('Failed to remove email via API:', saveResponse.message);
-        alert(`Failed to remove email: ${saveResponse.message}`);
-      }
-    } catch (error) {
-      console.error('Error removing Credit email:', error);
-      alert('Failed to remove email. Please try again.');
-    } finally {
-      setProcessingEmails(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(emailToRemove);
-        return newSet;
+      setProcessingEmails((prev) => {
+        const next = new Set(prev);
+        next.delete(emailToRemove);
+        return next;
       });
     }
   };
@@ -381,7 +269,7 @@ export const Settings: React.FC = () => {
               <button
                 onClick={() => sendTestEmail(email, category)}
                 disabled={testingEmail === email}
-                className="flex items-center px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors disabled:opacity-50"
+                className="flex items-center px-2 py-1 text-xs bg-primary-100 text-primary-700 rounded hover:bg-primary-200 transition-colors disabled:opacity-50"
                 title="Send test email"
               >
                 {testingEmail === email ? (
@@ -423,7 +311,7 @@ export const Settings: React.FC = () => {
           <button
             onClick={refreshEmailSettings}
             disabled={refreshing}
-            className="flex items-center px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors disabled:opacity-50"
+            className="flex items-center px-3 py-1 text-sm bg-primary-100 text-primary-700 rounded-lg hover:bg-primary-200 transition-colors disabled:opacity-50"
           >
             {refreshing ? (
               <Loader className="h-4 w-4 mr-1 animate-spin" />
@@ -439,107 +327,58 @@ export const Settings: React.FC = () => {
           <div className="bg-gray-50 p-4 rounded-lg border-2 border-dashed border-gray-300">
             <h4 className="text-sm font-medium text-gray-700 mb-2">Current Status:</h4>
             <div className="text-xs text-gray-600 space-y-1">
-              <div>ESG Emails: {emailSettings.esg_emails.length} configured</div>
-              <div>Credit Rating Emails: {emailSettings.credit_rating_emails.length} configured</div>
+              <div>Screening notification emails: {emailSettings.opportunity_emails.length} configured</div>
               <div>Loading: {loading ? 'Yes' : 'No'}</div>
               <div>Last Refresh: {new Date().toLocaleTimeString()}</div>
             </div>
           </div>
 
-          {/* ESG Team Emails */}
           <div>
             <div className="flex items-center justify-between mb-4">
               <h4 className="text-md font-medium text-gray-800 flex items-center">
-                <Users className="h-4 w-4 mr-2 text-green-600" />
-                ESG Team Notifications ({emailSettings.esg_emails.length})
+                <Users className="h-4 w-4 mr-2 text-primary-600" />
+                Opportunity screening alerts ({emailSettings.opportunity_emails.length})
               </h4>
             </div>
-            
-            {/* Add ESG Email Form */}
-            <div className="mb-4 p-4 bg-green-50 rounded-lg border border-green-200">
-              <div className="flex items-center space-x-3">
-                <div className="flex-1">
-                  <input
-                    type="email"
-                    value={newEsgEmail}
-                    onChange={(e) => {
-                      setNewEsgEmail(e.target.value);
-                      if (emailErrors.esg) setEmailErrors({ ...emailErrors, esg: '' });
-                    }}
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        addEsgEmail();
-                      }
-                    }}
-                    placeholder="Enter ESG team email address"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                  />
-                  {emailErrors.esg && (
-                    <p className="text-red-600 text-sm mt-1">{emailErrors.esg}</p>
-                  )}
-                </div>
-                <button
-                  onClick={addEsgEmail}
-                  disabled={!newEsgEmail.trim()}
-                  className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Plus className="h-4 w-4 mr-1" />
-                  Add
-                </button>
-              </div>
-            </div>
-            
-            {/* ESG Email List */}
-            {renderEmailList(emailSettings.esg_emails, 'screening_opportunities', removeEsgEmail)}
-          </div>
+            <p className="text-sm text-gray-600 mb-4">
+              Recipients get notifications for opportunities that pass the Precise screening checklist (Steps 1–3).
+            </p>
 
-          {/* Credit Rating Team Emails */}
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <h4 className="text-md font-medium text-gray-800 flex items-center">
-                <Users className="h-4 w-4 mr-2 text-purple-600" />
-                Credit Rating Team Notifications ({emailSettings.credit_rating_emails.length})
-              </h4>
-            </div>
-            
-            {/* Add Credit Email Form */}
-            <div className="mb-4 p-4 bg-purple-50 rounded-lg border border-purple-200">
+            <div className="mb-4 p-4 bg-primary-50 rounded-lg border border-primary-200">
               <div className="flex items-center space-x-3">
                 <div className="flex-1">
                   <input
                     type="email"
-                    value={newCreditEmail}
+                    value={newRecipientEmail}
                     onChange={(e) => {
-                      setNewCreditEmail(e.target.value);
-                      if (emailErrors.credit) setEmailErrors({ ...emailErrors, credit: '' });
+                      setNewRecipientEmail(e.target.value);
+                      if (emailErrors.recipients) setEmailErrors({ ...emailErrors, recipients: '' });
                     }}
                     onKeyPress={(e) => {
                       if (e.key === 'Enter') {
                         e.preventDefault();
-                        addCreditEmail();
+                        addRecipientEmail();
                       }
                     }}
-                    placeholder="Enter Credit Rating team email address"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                    placeholder="Email address for screening alerts"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                   />
-                  {emailErrors.credit && (
-                    <p className="text-red-600 text-sm mt-1">{emailErrors.credit}</p>
+                  {emailErrors.recipients && (
+                    <p className="text-red-600 text-sm mt-1">{emailErrors.recipients}</p>
                   )}
                 </div>
                 <button
-                  onClick={addCreditEmail}
-                  disabled={!newCreditEmail.trim()}
-                  className="flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={addRecipientEmail}
+                  disabled={!newRecipientEmail.trim()}
+                  className="flex items-center px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Plus className="h-4 w-4 mr-1" />
                   Add
                 </button>
               </div>
             </div>
-            
-            {/* Credit Email List */}
-            {renderEmailList(emailSettings.credit_rating_emails, 'screening_opportunities', removeCreditEmail)}
+
+            {renderEmailList(emailSettings.opportunity_emails, 'screening_opportunities', removeRecipientEmail)}
           </div>
 
           {/* Notification Preferences */}
@@ -548,40 +387,40 @@ export const Settings: React.FC = () => {
             <div className="space-y-3">
               <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                 <div>
-                  <label className="text-sm font-medium text-gray-700">New Tender Notifications</label>
-                  <p className="text-xs text-gray-500">Send immediate notifications when new tenders are found</p>
+                  <label className="text-sm font-medium text-gray-700">New opportunity alerts</label>
+                  <p className="text-xs text-gray-500">Notify when new screened opportunities are captured</p>
                 </div>
                 <input
                   type="checkbox"
                   checked={emailSettings.notification_preferences.send_for_new_tenders}
                   onChange={(e) => updateNotificationPreference('send_for_new_tenders', e.target.checked)}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
                 />
               </div>
               
               <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                 <div>
-                  <label className="text-sm font-medium text-gray-700">Daily Summary</label>
-                  <p className="text-xs text-gray-500">Send daily summary of all tender activities</p>
+                  <label className="text-sm font-medium text-gray-700">Daily summary</label>
+                  <p className="text-xs text-gray-500">Daily digest of screening activity</p>
                 </div>
                 <input
                   type="checkbox"
                   checked={emailSettings.notification_preferences.send_daily_summary}
                   onChange={(e) => updateNotificationPreference('send_daily_summary', e.target.checked)}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
                 />
               </div>
               
               <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                 <div>
-                  <label className="text-sm font-medium text-gray-700">Urgent Notifications</label>
-                  <p className="text-xs text-gray-500">Send urgent notifications for time-sensitive tenders</p>
+                  <label className="text-sm font-medium text-gray-700">Urgent notifications</label>
+                  <p className="text-xs text-gray-500">Highlight time-sensitive deadlines</p>
                 </div>
                 <input
                   type="checkbox"
                   checked={emailSettings.notification_preferences.send_urgent_notifications}
                   onChange={(e) => updateNotificationPreference('send_urgent_notifications', e.target.checked)}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
                 />
               </div>
             </div>
@@ -590,12 +429,12 @@ export const Settings: React.FC = () => {
           {/* Save Button */}
           <div className="flex justify-between items-center pt-4 border-t">
             <div className="text-sm text-gray-600">
-              Total configured emails: {emailSettings.esg_emails.length + emailSettings.credit_rating_emails.length}
+              Total recipients: {emailSettings.opportunity_emails.length}
             </div>
             <button
               onClick={saveEmailSettings}
               disabled={isSaving}
-              className="flex items-center px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+              className="flex items-center px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50"
             >
               {isSaving ? (
                 <>
@@ -620,7 +459,7 @@ export const Settings: React.FC = () => {
         <div className="overflow-hidden">
           {loading ? (
             <div className="flex items-center justify-center py-8">
-              <Loader className="h-6 w-6 text-blue-500 animate-spin" />
+              <Loader className="h-6 w-6 text-primary-500 animate-spin" />
             </div>
           ) : error ? (
             <div className="text-center py-4 text-red-500">Failed to load activity data</div>
@@ -668,7 +507,7 @@ export const Settings: React.FC = () => {
         
         {loading ? (
           <div className="flex items-center justify-center py-8">
-            <Loader className="h-8 w-8 text-blue-500 animate-spin" />
+            <Loader className="h-8 w-8 text-primary-500 animate-spin" />
             <span className="ml-2 text-gray-600">Loading system status...</span>
           </div>
         ) : error ? (
@@ -711,7 +550,7 @@ export const Settings: React.FC = () => {
             <div className="mt-4">
               <h4 className="text-md font-medium text-gray-800 mb-2">Database Statistics</h4>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="bg-blue-50 p-3 rounded-lg">
+                <div className="bg-primary-50 p-3 rounded-lg">
                   <div className="text-sm text-gray-600">Total Pages</div>
                   <div className="text-xl font-semibold">{systemStatus.database?.total_pages || 0}</div>
                 </div>
@@ -719,7 +558,7 @@ export const Settings: React.FC = () => {
                   <div className="text-sm text-gray-600">Active Pages</div>
                   <div className="text-xl font-semibold">{systemStatus.database?.active_pages || 0}</div>
                 </div>
-                <div className="bg-purple-50 p-3 rounded-lg">
+                <div className="bg-primary-50 p-3 rounded-lg">
                   <div className="text-sm text-gray-600">Total Tenders</div>
                   <div className="text-xl font-semibold">{systemStatus.database?.total_tenders || 0}</div>
                 </div>
@@ -789,7 +628,7 @@ export const Settings: React.FC = () => {
               disabled
             />
           </div>
-          <button className="mt-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
+          <button className="mt-2 bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors">
             Save Schedule
           </button>
         </div>
@@ -814,7 +653,7 @@ export const Settings: React.FC = () => {
             />
           </div>
           <div className="flex gap-3">
-            <button className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+            <button className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors">
               Backup Database
             </button>
             <button className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition-colors">

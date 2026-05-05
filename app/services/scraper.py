@@ -69,6 +69,12 @@ class TenderScraper:
                 **kwargs
             }
 
+            # EU Funding & Tenders Portal is a React SPA; give it time to render.
+            _eu_host = "ec.europa.eu"
+            if _eu_host in url and "funding-tenders" in url:
+                crawl_params.setdefault('delay_before_return_html', 5)
+                crawl_params.setdefault('word_count_threshold', 5)
+
             # Actual crawling invocation (async)
             result = await self.crawler.arun(**crawl_params)
 

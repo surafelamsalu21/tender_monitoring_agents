@@ -6,6 +6,7 @@ Database operations for monitored page management
 from datetime import datetime    # Import datetime for timestamping DB records
 from typing import List, Optional  # Import typing for type hints
 from sqlalchemy.orm import Session  # Import Session for SQLAlchemy DB access
+from sqlalchemy.exc import IntegrityError
 
 from app.models.page import MonitoredPage  # Import MonitoredPage model for ORM queries
 
@@ -28,15 +29,31 @@ class PageRepository:  # Repository pattern encapsulating all DB ops on Monitore
         """Get page by URL"""  # Docstring for method
         return db.query(MonitoredPage).filter(MonitoredPage.url == url).first()  # Filter by URL, get single or None
     
-    def create_page(self, db: Session, name: str, url: str, description: str = None, 
-                   crawl_frequency_hours: int = 3) -> MonitoredPage:  # Create MonitoredPage and store to DB
-        """Create a new monitored page"""  # Docstring for creation op
+    def create_page(
+        self,
+        db: Session,
+        name: str,
+        url: str,
+        description: str = None,
+        crawl_frequency_hours: int = 3,
+        crawl_strategy: str = "crawl4ai",
+        auth_login_url: str = None,
+        auth_username_env: str = None,
+        auth_password_env: str = None,
+        auth_form_selectors_json: str = None,
+    ) -> MonitoredPage:
+        """Create a new monitored page"""
         page = MonitoredPage(
-            name=name,  # Set name
-            url=url,  # Set url
-            description=description,  # Set optional description
-            crawl_frequency_hours=crawl_frequency_hours  # Set crawl interval in hours (default: 3)
-        )   # Instantiate ORM model
+            name=name,
+            url=url,
+            description=description,
+            crawl_frequency_hours=crawl_frequency_hours,
+            crawl_strategy=crawl_strategy or "crawl4ai",
+            auth_login_url=auth_login_url,
+            auth_username_env=auth_username_env,
+            auth_password_env=auth_password_env,
+            auth_form_selectors_json=auth_form_selectors_json,
+        )
         db.add(page)  # Add to DB session
         db.commit()  # Commit (save) to DB
         db.refresh(page)  # Refresh to get new PK/id and state from DB
@@ -58,14 +75,18 @@ class PageRepository:  # Repository pattern encapsulating all DB ops on Monitore
         return page  # Return updated object
     
     def delete_page(self, db: Session, page_id: int) -> bool:  # Delete the page by id
-        """Delete a monitored page"""  # Docstring for method
+        """Delete a monitored page and related tenders, details, and crawl logs (ORM cascades)."""
         page = self.get_page_by_id(db, page_id)  # Lookup object
         if not page:
             return False  # Indicate not found
-        
-        db.delete(page)  # Remove from DB session
-        db.commit()  # Save changes
-        return True  # Indicate delete success
+
+        try:
+            db.delete(page)  # Remove from DB session
+            db.commit()  # Save changes
+            return True  # Indicate delete success
+        except IntegrityError:
+            db.rollback()
+            raise
     
     def update_crawl_status(self, db: Session, page_id: int, success: bool):  # Update crawl results for a page after crawl attempt
         """Update page crawl status"""  # Docstring for method

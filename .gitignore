@@ -70,6 +70,9 @@ logs
 /static/
 /media/
 
+# Script outputs (may contain portal HTML / tokens)
+/out/
+
 # Crawl4AI cache
 .crawl4ai/
 

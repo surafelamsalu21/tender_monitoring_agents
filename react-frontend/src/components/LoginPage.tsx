@@ -32,8 +32,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="w-full max-w-md bg-white border border-gray-200 rounded-xl shadow-sm p-6">
-        <h1 className="text-2xl font-bold text-gray-900 mb-1">Tender Monitor</h1>
-        <p className="text-sm text-gray-600 mb-6">Sign in with your company email to continue.</p>
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-900 mb-2 leading-tight tracking-tight">Precise</h1>
+          <p className="text-lg font-bold text-brand-muted leading-snug mb-3">
+            <span className="text-primary-600">Tender</span> monitoring
+          </p>
+          <p className="text-sm text-gray-600">Sign in with your company email to continue.</p>
+        </div>
 
         <form onSubmit={onSubmit} className="space-y-4">
           <div>
@@ -45,7 +50,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="name@preciseethiopia.com"
-                className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
                 required
               />
             </div>
@@ -60,7 +65,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Enter your password"
-                className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500"
                 required
               />
             </div>
@@ -75,7 +80,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
           <button
             type="submit"
             disabled={submitting}
-            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium rounded-lg py-2.5 transition-colors"
+            className="w-full bg-primary-600 hover:bg-primary-700 disabled:bg-primary-400 text-white font-medium rounded-lg py-2.5 transition-colors"
           >
             {submitting ? 'Signing in...' : 'Sign In'}
           </button>

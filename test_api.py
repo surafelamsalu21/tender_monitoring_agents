@@ -26,23 +26,29 @@ def test_email_settings_api():
     except Exception as e:
         print(f"   Connection Error: {e}")
     
-    # Test 2: Add ESG email
-    print("\n2. Testing POST /api/v1/system/email-settings/esg/add")
+    # Test 2: Add screening notification recipient
+    print("\n2. Testing POST /api/v1/system/email-settings/screening_opportunities/add")
     try:
-        test_email = "test-esg@example.com"
+        test_email = "test-screening@example.com"
         payload = {"email": test_email}
-        response = requests.post(f"{BASE_URL}/api/v1/system/email-settings/esg/add", json=payload)
+        response = requests.post(
+            f"{BASE_URL}/api/v1/system/email-settings/screening_opportunities/add",
+            json=payload,
+        )
         print(f"   Status: {response.status_code}")
         print(f"   Response: {response.json() if response.status_code == 200 else response.text}")
     except Exception as e:
         print(f"   Error: {e}")
     
-    # Test 3: Add Credit Rating email
-    print("\n3. Testing POST /api/v1/system/email-settings/credit_rating/add")
+    # Test 3: Add second recipient via same endpoint
+    print("\n3. Testing POST /api/v1/system/email-settings/screening_opportunities/add (second)")
     try:
-        test_email = "test-credit@example.com"
+        test_email = "test-screening-2@example.com"
         payload = {"email": test_email}
-        response = requests.post(f"{BASE_URL}/api/v1/system/email-settings/credit_rating/add", json=payload)
+        response = requests.post(
+            f"{BASE_URL}/api/v1/system/email-settings/screening_opportunities/add",
+            json=payload,
+        )
         print(f"   Status: {response.status_code}")
         print(f"   Response: {response.json() if response.status_code == 200 else response.text}")
     except Exception as e:
@@ -52,8 +58,7 @@ def test_email_settings_api():
     print("\n4. Testing POST /api/v1/system/email-settings")
     try:
         payload = {
-            "esg_emails": ["esg1@company.com", "esg2@company.com"],
-            "credit_rating_emails": ["credit1@company.com", "credit2@company.com"],
+            "opportunity_emails": ["ops1@company.com", "ops2@company.com"],
             "notification_preferences": {
                 "send_for_new_tenders": True,
                 "send_daily_summary": True,

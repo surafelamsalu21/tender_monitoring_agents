@@ -28,9 +28,7 @@ export interface LoginResponse {
 
 // Add email settings types
 export interface EmailNotificationSettings {
-  opportunity_emails?: string[];
-  esg_emails?: string[];
-  credit_rating_emails?: string[];
+  opportunity_emails: string[];
   notification_preferences: {
     send_for_new_tenders: boolean;
     send_daily_summary: boolean;
@@ -216,6 +214,11 @@ export const apiService = {
     return data as { message: string };
   },
 
+  getExtractionStatus: async (): Promise<{ running: boolean; started_at: string | null }> => {
+    const data = await apiRequest('/extraction-status');
+    return data as { running: boolean; started_at: string | null };
+  },
+
   // Tenders
   getTenders: async (): Promise<Tender[]> => {
     const data = await apiRequest('/api/v1/tenders/');
@@ -228,13 +231,19 @@ export const apiService = {
     return data as Tender;
   },
 
+  // Delete a tender (and its detailed info via cascade)
+  deleteTender: async (tenderId: number): Promise<{ success: boolean; tender_id: number }> => {
+    const data = await apiRequest(`/api/v1/tenders/${tenderId}`, 'delete');
+    return data as { success: boolean; tender_id: number };
+  },
+
   // Pages
   getPages: async (): Promise<Page[]> => {
     const data = await apiRequest('/api/v1/pages/');
     return data as Page[];
   },
 
-  createPage: async (data: { url: string; name: string }): Promise<Page> => {
+  createPage: async (data: { url: string; name: string; crawl_strategy?: Page['crawl_strategy'] }): Promise<Page> => {
     const responseData = await apiRequest('/api/v1/pages/', 'post', data);
     return responseData as Page;
   },
@@ -297,8 +306,6 @@ export const apiService = {
         message: 'Using default settings',
         settings: {
           opportunity_emails: [],
-          esg_emails: [],
-          credit_rating_emails: [],
           notification_preferences: {
             send_for_new_tenders: true,
             send_daily_summary: true,
@@ -311,14 +318,9 @@ export const apiService = {
 
   saveEmailSettings: async (settings: EmailNotificationSettings): Promise<EmailSettingsResponse> => {
     try {
-      const mergedOpportunityEmails =
-        settings.opportunity_emails ??
-        Array.from(
-          new Set([...(settings.esg_emails || []), ...(settings.credit_rating_emails || [])])
-        );
       const payload = {
-        ...settings,
-        opportunity_emails: mergedOpportunityEmails,
+        opportunity_emails: settings.opportunity_emails ?? [],
+        notification_preferences: settings.notification_preferences,
       };
       const data = await apiRequest('/api/v1/system/email-settings', 'post', payload);
       return data as EmailSettingsResponse;
