@@ -7,15 +7,23 @@ interface StatCardProps {
   icon: LucideIcon;
   color: string;
   trend?: string;
+  trendClassName?: string;
 }
 
-export const StatCard: React.FC<StatCardProps> = ({ title, value, icon: Icon, color, trend }) => (
+export const StatCard: React.FC<StatCardProps> = ({
+  title,
+  value,
+  icon: Icon,
+  color,
+  trend,
+  trendClassName = 'text-green-600',
+}) => (
   <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-8 hover:shadow-xl transition-all duration-300 hover:scale-105">
     <div className="flex items-center justify-between">
       <div className="flex-1">
         <p className="text-base font-medium text-gray-600 mb-2">{title}</p>
         <p className="text-4xl font-bold text-gray-900 mb-2">{value}</p>
-        {trend && <p className="text-sm text-green-600 font-medium">{trend}</p>}
+        {trend && <p className={`text-sm font-medium ${trendClassName}`}>{trend}</p>}
       </div>
       <div className={`p-4 rounded-xl ${color} shadow-lg`}>
         <Icon className="h-8 w-8 text-white" />

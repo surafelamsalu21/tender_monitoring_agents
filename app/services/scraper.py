@@ -80,6 +80,7 @@ class TenderScraper:
 
             if result.success:
                 # On success, return structured output and meta counts.
+                status_code = getattr(result, "status_code", None)
                 return {
                     'status': 'success',
                     'url': url,
@@ -89,6 +90,7 @@ class TenderScraper:
                     'links': result.links,
                     'media': result.media,
                     'metadata': result.metadata,
+                    'status_code': status_code,
                     'word_count': len(result.markdown.split()) if result.markdown else 0,
                     'char_count': len(result.markdown) if result.markdown else 0
                 }
@@ -103,7 +105,8 @@ class TenderScraper:
                     'html': '',
                     'links': [],
                     'media': [],
-                    'metadata': {}
+                    'metadata': {},
+                    'status_code': getattr(result, "status_code", None),
                 }
 
         except Exception as e:
@@ -117,7 +120,8 @@ class TenderScraper:
                 'html': '',
                 'links': [],
                 'media': [],
-                'metadata': {}
+                'metadata': {},
+                'status_code': None,
             }
 
     async def scrape_multiple_pages(self, urls: list, max_concurrent: int = None) -> Dict[str, Dict[str, Any]]:

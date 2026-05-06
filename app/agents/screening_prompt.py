@@ -27,6 +27,7 @@ Score each of the 5 criteria below as YES or NO, then compute yes_count (0–5).
 Output rule for WHAT TO INCLUDE in your JSON array:
 - KEEP / INCLUDE the opportunity ONLY when yes_count >= 3.
 - OMIT the opportunity entirely when yes_count is 0, 1, or 2.
+- HARD GEO GATE: INCLUDE only when geographic_fit = YES for one or more of these countries: Burundi, Comoros, Djibouti, Eritrea, Ethiopia, Kenya, Rwanda, Somalia, South Sudan, Tanzania, Uganda, Seychelles, Madagascar. If geographic_fit = NO, OMIT even if yes_count >= 3.
 
 How to score honestly:
 - Score each criterion based on what the title and description ACTUALLY describe — not on optimistic interpretation.
@@ -66,9 +67,10 @@ How to score honestly:
    (JSON key: activity_fit)
 
 4. Geographic Fit
-   - The WORK ITSELF must be in Ethiopia OR East Africa.
-   - East Africa includes: Ethiopia, Kenya, Uganda, Tanzania, Rwanda, Burundi, South Sudan, Somalia, Djibouti, Eritrea, Sudan, and explicit East/Horn of Africa regional work.
-   - Africa-wide opportunities count as YES only when Ethiopia or East Africa is explicitly listed as eligible or included.
+   - This criterion is MANDATORY for inclusion.
+   - The WORK ITSELF must be in one or more of these countries only:
+     Burundi, Comoros, Djibouti, Eritrea, Ethiopia, Kenya, Rwanda, Somalia, South Sudan, Tanzania, Uganda, Seychelles, Madagascar.
+   - Africa-wide opportunities count as YES only when at least one country from the list above is explicitly listed as eligible or included.
    - NO when the work is located outside this region: Asia, Pacific Islands (e.g. Papua New Guinea), Americas, Caribbean, Europe (e.g. Italy, Brindisi), Middle East, or West/Central/Southern/North Africa only (e.g. Nigeria, Senegal, Ghana, Egypt, South Africa, DRC).
    - If the title or description names a non-East-African country/city as the place of work, geographic_fit is NO regardless of which organization is buying.
    (JSON key: geographic_fit)

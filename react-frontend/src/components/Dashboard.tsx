@@ -7,6 +7,7 @@ import {
 import { StatCard } from './StatCard';
 import { Stats, SystemStatus, Tender } from '../types';
 import { ExtractionPhase } from '../hooks/useApi';
+import { isTenderCreatedLocalToday } from '../utils/tenderDates';
 
 interface DashboardProps {
   stats: Stats;
@@ -63,13 +64,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const notifiedTenders = tenders.filter(t => t.is_notified);
   const unnotifiedTenders = tenders.filter(t => !t.is_notified);
   
-  // Recent tenders (last 24 hours)
-  const recentTenders = tenders.filter(t => {
-    const tenderDate = new Date(t.created_at);
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    return tenderDate > yesterday;
-  });
+  // Today's tenders (local calendar day — resets at midnight; matches DB stats)
+  const todaysTenders = tenders
+    .filter((t) => isTenderCreatedLocalToday(t.created_at))
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
@@ -102,21 +103,42 @@ export const Dashboard: React.FC<DashboardProps> = ({
           value={stats.total}
           icon={FileText}
           color="bg-primary-500"
-          trend={`+${recentTenders.length} today`}
+          trend={
+            stats.addedToday === 1
+              ? '1 added today'
+              : `${stats.addedToday} added today`
+          }
+          trendClassName={
+            stats.addedToday > 0 ? 'text-emerald-600' : 'text-gray-500'
+          }
         />
         <StatCard
           title="Recommended match"
           value={stats.recommended}
           icon={Leaf}
           color="bg-green-500"
-          trend={`${Math.round((stats.recommended / stats.total * 100) || 0)}% of total`}
+          trend={`${Math.round((stats.recommended / stats.total * 100) || 0)}% of total · ${
+            stats.addedTodayRecommended === 1
+              ? '1 new today'
+              : `${stats.addedTodayRecommended} new today`
+          }`}
+          trendClassName={
+            stats.addedTodayRecommended > 0 ? 'text-emerald-600' : 'text-gray-500'
+          }
         />
         <StatCard
           title="Low match (1–2 criteria)"
           value={stats.lowMatch}
           icon={CreditCard}
           color="bg-amber-500"
-          trend={`${Math.round((stats.lowMatch / stats.total * 100) || 0)}% of total`}
+          trend={`${Math.round((stats.lowMatch / stats.total * 100) || 0)}% of total · ${
+            stats.addedTodayLowMatch === 1
+              ? '1 new today'
+              : `${stats.addedTodayLowMatch} new today`
+          }`}
+          trendClassName={
+            stats.addedTodayLowMatch > 0 ? 'text-amber-700' : 'text-gray-500'
+          }
         />
         <StatCard
           title="Active Pages"
@@ -360,8 +382,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-8">
         <h3 className="text-xl font-semibold text-gray-900 mb-6">Recent Activity</h3>
         <div className="space-y-4">
-          {recentTenders.length > 0 ? (
-            recentTenders.slice(0, 5).map((tender, index) => (
+          {todaysTenders.length > 0 ? (
+            todaysTenders.slice(0, 5).map((tender) => (
               <div key={tender.id} className="flex items-center justify-between py-3 border-b border-gray-100 last:border-b-0">
                 <div className="flex items-center">
                   <div className={`w-3 h-3 rounded-full mr-4 ${
@@ -388,8 +410,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <div className="flex items-center justify-center text-gray-400 mb-2">
                 <Clock className="h-8 w-8" />
               </div>
-              <p className="text-gray-500">No recent activity</p>
-              <p className="text-xs text-gray-400 mt-1">Trigger an extraction to see new tenders</p>
+              <p className="text-gray-500">No tenders added yet today</p>
+              <p className="text-xs text-gray-400 mt-1">
+                After midnight, counts reset until you run a manual scan or the scheduler finds new rows
+              </p>
             </div>
           )}
         </div>

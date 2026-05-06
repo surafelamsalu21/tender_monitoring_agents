@@ -9,8 +9,10 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 
+from app.auth.deps import get_current_user, require_super_admin
 from app.core.database import get_db
 from app.models.tender import DetailedTender, Tender
+from app.models.user import User
 from app.repositories.tender_repository import TenderRepository
 
 router = APIRouter()
@@ -208,8 +210,36 @@ async def get_tenders(
     return rows
 
 
+def _parse_utc_bounds(day_start: Optional[str], day_end: Optional[str]) -> Optional[tuple]:
+    """Parse ISO8601 bounds from client (browser local midnight as UTC instants). Returns (start, end) naive UTC or None."""
+    if not day_start or not day_end:
+        return None
+    try:
+        s = day_start.replace("Z", "+00:00")
+        e = day_end.replace("Z", "+00:00")
+        start = datetime.fromisoformat(s)
+        end = datetime.fromisoformat(e)
+        if start.tzinfo is not None:
+            start = start.astimezone(timezone.utc).replace(tzinfo=None)
+        if end.tzinfo is not None:
+            end = end.astimezone(timezone.utc).replace(tzinfo=None)
+        return start, end
+    except ValueError:
+        return None
+
+
 @router.get("/stats/summary")
-async def get_tender_stats(db: Session = Depends(get_db)):
+async def get_tender_stats(
+    db: Session = Depends(get_db),
+    tenders_day_start: Optional[str] = Query(
+        None,
+        description="ISO8601 UTC instant = start of user's local calendar day (from browser)",
+    ),
+    tenders_day_end: Optional[str] = Query(
+        None,
+        description="ISO8601 UTC instant = end of user's local day (exclusive)",
+    ),
+):
     """Get tender statistics (static path must be registered before /{tender_id})."""
     total_tenders = db.query(Tender).count()
     passed_screening = db.query(Tender).filter(Tender.passes_screening == True).count()
@@ -222,6 +252,20 @@ async def get_tender_stats(db: Session = Depends(get_db)):
 
     low_match_screening = failed_screening  # passes_screening False = 1–2 YES (not a failure — marginal fit)
 
+    bounds = _parse_utc_bounds(tenders_day_start, tenders_day_end)
+    tenders_added_today = 0
+    tenders_added_today_recommended = 0
+    tenders_added_today_low_match = 0
+    if bounds:
+        start, end = bounds
+        day_q = db.query(Tender).filter(
+            Tender.created_at >= start,
+            Tender.created_at < end,
+        )
+        tenders_added_today = day_q.count()
+        tenders_added_today_recommended = day_q.filter(Tender.passes_screening == True).count()
+        tenders_added_today_low_match = day_q.filter(Tender.passes_screening == False).count()
+
     return {
         "total_tenders": total_tenders,
         "passed_screening": passed_screening,
@@ -230,13 +274,64 @@ async def get_tender_stats(db: Session = Depends(get_db)):
         "low_match_screening": low_match_screening,
         "recent_tenders_7_days": recent_tenders,
         "unnotified_tenders": unnotified,
+        "tenders_added_today": tenders_added_today,
+        "tenders_added_today_recommended": tenders_added_today_recommended,
+        "tenders_added_today_low_match": tenders_added_today_low_match,
         "last_updated": datetime.utcnow().isoformat(),
     }
 
 
+@router.post("/retry-pending-details")
+async def retry_pending_details(
+    limit: int = Query(20, ge=1, le=50),
+    only_passed_screening: bool = Query(True),
+    skip_date_validation: bool = Query(False),
+    send_notifications: bool = Query(True),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """Re-run Agent 2 for up to ``limit`` tenders with is_processed False (auth required)."""
+    from app.services.agent2_retry import retry_pending_details_bulk
+
+    return await retry_pending_details_bulk(
+        db,
+        limit=limit,
+        only_passed_screening=only_passed_screening,
+        skip_date_validation=skip_date_validation,
+        send_notifications=send_notifications,
+    )
+
+
+@router.post("/{tender_id}/retry-detail")
+async def retry_single_tender_detail(
+    tender_id: int,
+    skip_date_validation: bool = Query(False),
+    send_notifications: bool = Query(True),
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """Re-run Agent 2 for one tender and persist details on success."""
+    from app.services.agent2_retry import retry_agent2_detail_for_tender
+
+    result = await retry_agent2_detail_for_tender(
+        db,
+        tender_id,
+        skip_date_validation=skip_date_validation,
+        send_notifications=send_notifications,
+    )
+    if result.get("success"):
+        return result
+    code = 404 if result.get("error") == "not_found" else 400
+    raise HTTPException(status_code=code, detail=result.get("message", "Retry failed"))
+
+
 @router.delete("/{tender_id}")
-async def delete_tender(tender_id: int, db: Session = Depends(get_db)):
-    """Delete a tender (and its detailed information) by ID."""
+async def delete_tender(
+    tender_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_super_admin),
+):
+    """Delete a tender (and its detailed information) by ID. Super admin only."""
     tender_repo = TenderRepository()
     deleted = tender_repo.delete_tender(db, tender_id)
     if not deleted:

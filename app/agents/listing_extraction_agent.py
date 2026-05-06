@@ -10,6 +10,7 @@ from urllib.parse import urljoin
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.llm_json_io import extract_message_text, parse_json_array
+from app.agents.page_sanity import markdown_indicates_error_or_empty_notice
 from app.core.config import settings
 from app.core.llm_factory import get_chat_llm
 
@@ -26,7 +27,8 @@ Extraction rules:
 - url: use the individual notice/detail/PDF URL when present. Make it absolute https. If only the listing page exists, use the listing URL.
 - date: use the submission deadline/closing date/due date/opening date when clearly stated. Normalize to YYYY-MM-DD when possible. Leave "" when no deadline-like date is visible.
 - description: one short English line summarizing scope, buyer/organization, budget/value, or requirements if visible.
-- Use empty string for missing date/description. Do not invent deadlines, budgets, or organizations."""
+- Use empty string for missing date/description. Do not invent deadlines, budgets, or organizations.
+- If the markdown is an error page (404/not found/access denied), a login wall with no notices, or there are no real procurement notices, return [] exactly. Do not fabricate rows."""
 
 
 def _normalize_row_url(href: str, base_url: str) -> str:
@@ -188,6 +190,11 @@ class ListingExtractionAgent:
     ) -> List[Dict[str, Any]]:
         max_chars = int(getattr(settings, "AGENT1_FAST_MAX_INPUT_CHARS", 12_000) or 12_000)
         body = self.truncate_markdown(page_content or "", max_chars)
+        if markdown_indicates_error_or_empty_notice(body, http_status=None):
+            logger.info(
+                "ListingExtractionAgent: error-like or empty markdown; skipping LLM (0 rows)"
+            )
+            return []
         timeout = int(getattr(settings, "AGENT1_FAST_STEP_TIMEOUT_SEC", 300) or 300)
         base = (page_url or "").strip()
 

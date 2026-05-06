@@ -22,6 +22,7 @@ from app.crawl.orchestrator import harvest_for_page
 from app.utils.listing_prep import dual_markdown_for_agent1_and_expiry
 from app.pipeline.crawl_artifact import crawl_artifact_from_harvest
 from app.pipeline.progress import pipeline_tty
+from app.services.db_backup import run_scheduled_backup
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,12 @@ class TenderScheduler:
         self.task = None
         self.extraction_in_progress = False
         self.extraction_started_at: str | None = None
+        self.last_extraction_at: str | None = None
+        self.next_extraction_at: str | None = None
+        self.backup_task: Optional[asyncio.Task] = None
+        self.last_backup_at: str | None = None
+        self.last_backup_filename: str | None = None
+        self.last_backup_error: str | None = None
     
     async def start(self):
         """Start the periodic crawling scheduler"""
@@ -53,9 +60,18 @@ class TenderScheduler:
         logger.info("Starting extended tender monitoring pipeline with Agent 3...")
         logger.info(f"Scheduler will run every {settings.CRAWL_INTERVAL_HOURS} hours")
         logger.info("Extended Pipeline: Main Page -> Agent1 -> DB1 -> Agent2 -> DB2 -> Agent3 -> Enhanced Email")
-        
+
         # Start periodic task
         self.task = asyncio.create_task(self._periodic_task())
+
+        # Start independent backup loop (skipped at runtime if BACKUP_ENABLED=False)
+        if bool(getattr(settings, "BACKUP_ENABLED", True)):
+            self.backup_task = asyncio.create_task(self._periodic_backup())
+            logger.info(
+                "Database backup scheduler started (every %sh, retention=%s)",
+                getattr(settings, "BACKUP_INTERVAL_HOURS", 24),
+                getattr(settings, "BACKUP_RETENTION", 30),
+            )
     
     async def stop(self):
         """Stop the periodic crawling"""
@@ -66,17 +82,63 @@ class TenderScheduler:
                 await self.task
             except asyncio.CancelledError:
                 pass
+        if self.backup_task:
+            self.backup_task.cancel()
+            try:
+                await self.backup_task
+            except asyncio.CancelledError:
+                pass
         logger.info("Scheduler stopped")
+
+    async def _periodic_backup(self):
+        """Independent loop that takes a SQLite online backup every N hours."""
+        from datetime import datetime, timezone
+
+        initial_delay = max(0, int(getattr(settings, "BACKUP_INITIAL_DELAY_SECONDS", 300) or 0))
+        interval_hours = max(1, int(getattr(settings, "BACKUP_INTERVAL_HOURS", 24) or 24))
+        interval_seconds = interval_hours * 3600
+
+        try:
+            await asyncio.sleep(initial_delay)
+        except asyncio.CancelledError:
+            return
+
+        while self.running:
+            try:
+                info = await asyncio.to_thread(run_scheduled_backup)
+                if info is not None:
+                    self.last_backup_at = datetime.now(timezone.utc).isoformat()
+                    self.last_backup_filename = info.filename
+                    self.last_backup_error = None
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.last_backup_error = str(e)
+                logger.error("Scheduled DB backup failed: %s", e)
+
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
     
     async def _periodic_task(self):
-        """Internal periodic task runner"""
+        """Internal periodic task runner — runs every CRAWL_INTERVAL_HOURS."""
+        from datetime import datetime, timedelta, timezone
+
         interval_seconds = settings.CRAWL_INTERVAL_HOURS * 3600
-        
+        # Initial next-run estimate (from startup), updated after each run.
+        self.next_extraction_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)
+        ).isoformat()
+
         while self.running:
             try:
                 await asyncio.sleep(interval_seconds)
                 if self.running:
                     await self.run_extraction_once()
+                self.next_extraction_at = (
+                    datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)
+                ).isoformat()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -127,6 +189,11 @@ class TenderScheduler:
             
             # Step 5: Fallback notifications for any unnotified tenders (if Agent 3 failed)
             await self._send_fallback_notifications(db)
+
+            # Step 6: Automatic catch-up for pending detail extraction so users don't
+            # need to click "Retry pending details (batch)" manually every run.
+            if total_new_tenders > 0:
+                await self._auto_retry_pending_details_and_notify(db)
             
             logger.info(f"Extended extraction cycle completed - {total_new_tenders} new tenders processed with {len(all_email_compositions)} intelligent emails")
             
@@ -136,6 +203,7 @@ class TenderScheduler:
             db.close()
             self.extraction_in_progress = False
             self.extraction_started_at = None
+            self.last_extraction_at = datetime.now(timezone.utc).isoformat()
     
     async def _process_page_extended_pipeline(
         self, db: Session, page: MonitoredPage, force: bool = False
@@ -351,7 +419,10 @@ class TenderScheduler:
         try:
             logger.info("Checking for unnotified tenders (fallback notifications)...")
             
-            unnotified_tenders = self.tender_repo.get_unnotified_tenders(db, only_passed=True)
+            # Only notify (and mark is_notified) for tenders that finished Agent 2.
+            unnotified_tenders = self.tender_repo.get_unnotified_tenders(
+                db, only_passed=True, require_processed=True
+            )
             if not unnotified_tenders:
                 logger.info("No unnotified screened opportunities found for fallback notifications")
                 return
@@ -376,6 +447,36 @@ class TenderScheduler:
                 
         except Exception as e:
             logger.error(f"Error sending fallback notifications: {e}")
+
+    async def _auto_retry_pending_details_and_notify(self, db: Session):
+        """
+        Automatic catch-up pass after extraction:
+        - Retry Agent 2 for pending recommended tenders
+        - Send notifications for newly processed unnotified tenders
+        This mirrors the manual "Retry pending details (batch)" action.
+        """
+        try:
+            from app.services.agent2_retry import retry_pending_details_bulk
+
+            logger.info(
+                "Auto catch-up: retrying pending detail extraction (recommended only)"
+            )
+            result = await retry_pending_details_bulk(
+                db,
+                limit=50,
+                only_passed_screening=True,
+                # Pending rows often need permissive retry path.
+                skip_date_validation=True,
+                send_notifications=True,
+            )
+            logger.info(
+                "Auto catch-up done: attempted=%s completed=%s notified_sent=%s",
+                result.get("attempted", 0),
+                result.get("completed", 0),
+                (result.get("notification") or {}).get("sent", 0),
+            )
+        except Exception as exc:
+            logger.error("Auto catch-up retry failed: %s", exc)
     
     async def test_extended_pipeline(self):
         """Test the extended pipeline with Agent 3 (for development)"""

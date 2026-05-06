@@ -42,6 +42,7 @@ const AuthenticatedApp: React.FC<{
     loadTenders,
     loadPages,
     loadKeywords,
+    refreshTenderStats,
     triggerExtraction,
     setError,
     isExtracting,
@@ -52,6 +53,7 @@ const AuthenticatedApp: React.FC<{
 
   const refreshData = async () => {
     await Promise.all([loadTenders(), loadPages(), loadKeywords()]);
+    await refreshTenderStats();
   };
 
   const navigation = [
@@ -80,7 +82,16 @@ const AuthenticatedApp: React.FC<{
           />
         );
       case 'tenders':
-        return <TenderList tenders={tenders} onRefresh={loadTenders} />;
+        return (
+          <TenderList
+            tenders={tenders}
+            onRefresh={async () => {
+              await loadTenders();
+              await refreshTenderStats();
+            }}
+            currentUser={user}
+          />
+        );
       case 'pages':
         return <PageManager pages={pages} onRefresh={refreshData} />;
       case 'keywords':

@@ -21,14 +21,20 @@ import {
   MapPin,
   FileText,
   AlertCircle,
-  DollarSign
+  DollarSign,
+  RefreshCw
 } from 'lucide-react';
 import { Tender, CategoryType } from '../types';
-import { apiService } from '../services/api';
+import { apiService, AuthUser } from '../services/api';
+import {
+  formatAddedToDatabase,
+  isTenderCreatedLocalToday,
+} from '../utils/tenderDates';
 
 interface TenderListProps {
   tenders: Tender[];
   onRefresh?: () => void | Promise<void>;
+  currentUser?: AuthUser | null;
 }
 
 type ViewType = 'processed' | 'all' | 'active' | 'expired';
@@ -61,7 +67,13 @@ function formatDaysUntilDeadlineValue(dv: {
   };
 }
 
-export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) => {
+export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, currentUser }) => {
+  const canDelete = !!currentUser && (
+    currentUser.role === 'super_admin' ||
+    currentUser.role === 'superadmin' ||
+    currentUser.is_superuser === true
+  );
+
   // State management
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<CategoryType>('all');
@@ -76,6 +88,10 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) =>
   const [tenderPendingDelete, setTenderPendingDelete] = useState<Tender | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const [retryingId, setRetryingId] = useState<number | null>(null);
+  const [bulkRetrying, setBulkRetrying] = useState(false);
+  const [retryMessage, setRetryMessage] = useState<string | null>(null);
 
   const requestDelete = (tender: Tender) => {
     setTenderPendingDelete(tender);
@@ -101,6 +117,52 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) =>
       setDeleteError(err instanceof Error ? err.message : 'Failed to delete tender');
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  const retryDetailExtraction = async (tender: Tender, skipDateValidation: boolean) => {
+    if (!currentUser) return;
+    setRetryMessage(null);
+    setRetryingId(tender.id);
+    try {
+      await apiService.retryTenderDetail(tender.id, { skipDateValidation });
+      setRetryMessage(`Details saved for tender #${tender.id}.`);
+      if (onRefresh) await onRefresh();
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { detail?: string } }; message?: string };
+      const msg =
+        ax?.response?.data?.detail ||
+        (err instanceof Error ? err.message : 'Retry failed');
+      setRetryMessage(msg);
+      console.error('Retry detail extraction failed:', err);
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
+  const retryPendingBulk = async () => {
+    if (!currentUser) return;
+    setRetryMessage(null);
+    setBulkRetrying(true);
+    try {
+      const res = await apiService.retryPendingTenderDetails({
+        limit: 20,
+        onlyPassedScreening: true,
+        skipDateValidation: false,
+      });
+      setRetryMessage(
+        `Bulk retry: ${res.completed}/${res.attempted} tender(s) completed detail extraction.`
+      );
+      if (onRefresh) await onRefresh();
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { detail?: string } }; message?: string };
+      const msg =
+        ax?.response?.data?.detail ||
+        (err instanceof Error ? err.message : 'Bulk retry failed');
+      setRetryMessage(msg);
+      console.error('Bulk retry failed:', err);
+    } finally {
+      setBulkRetrying(false);
     }
   };
 
@@ -184,8 +246,11 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) =>
       filtered = filtered.filter(tender => tender.passes_screening === false);
     }
 
-    // Apply sorting
+    // Apply sorting (local "today" rows first, then chosen sort)
     filtered.sort((a, b) => {
+      const aToday = isTenderCreatedLocalToday(a.created_at) ? 1 : 0;
+      const bToday = isTenderCreatedLocalToday(b.created_at) ? 1 : 0;
+      if (bToday !== aToday) return bToday - aToday;
       switch (sortBy) {
         case 'newest':
           return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
@@ -331,10 +396,32 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) =>
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-7xl mx-auto p-6">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Tender Management</h1>
-          <p className="text-gray-600">Manage and view all tender opportunities processed by our AI agents</p>
+        <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900 mb-2">Tender Management</h1>
+            <p className="text-gray-600">Manage and view all tender opportunities processed by our AI agents</p>
+          </div>
+          {currentUser && (
+            <button
+              type="button"
+              onClick={() => void retryPendingBulk()}
+              disabled={bulkRetrying}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-900 text-sm font-medium hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+              title="Re-run Agent 2 for up to 20 recommended tenders still pending detail extraction"
+            >
+              <RefreshCw className={`h-4 w-4 ${bulkRetrying ? 'animate-spin' : ''}`} />
+              {bulkRetrying ? 'Retrying…' : 'Retry pending details (batch)'}
+            </button>
+          )}
         </div>
+        {retryMessage && (
+          <div
+            className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800"
+            role="status"
+          >
+            {retryMessage}
+          </div>
+        )}
 
         {/* View Tabs */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-6">
@@ -479,8 +566,17 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) =>
               </button>
             </div>
           ) : (
-            filteredTenders.map((tender) => (
-              <div key={tender.id} className={`rounded-xl shadow-sm border border-gray-200 hover:shadow-lg transition-all duration-200 group bg-white ${screeningCardAccent(tender)}`}>
+            filteredTenders.map((tender) => {
+              const isNewToday = isTenderCreatedLocalToday(tender.created_at);
+              return (
+              <div
+                key={tender.id}
+                className={`rounded-xl shadow-sm border hover:shadow-lg transition-all duration-200 group ${
+                  isNewToday
+                    ? 'ring-2 ring-emerald-400/90 border-emerald-200 bg-emerald-50/50'
+                    : 'border-gray-200 bg-white'
+                } ${screeningCardAccent(tender)}`}
+              >
                 <div className="p-6">
                   <div className="flex items-start justify-between">
                     <div className="flex-1 min-w-0">
@@ -519,6 +615,11 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) =>
                             Notified
                           </span>
                         )}
+                        {isNewToday && (
+                          <span className="inline-flex items-center text-xs font-semibold text-emerald-900 bg-emerald-200/90 px-2 py-1 rounded-full border border-emerald-400">
+                            Added today
+                          </span>
+                        )}
                       </div>
                       
                       {/* Description */}
@@ -530,10 +631,19 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) =>
                       
                       {/* Footer */}
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center text-sm text-gray-500 space-x-4">
+                        <div className="flex items-center text-sm text-gray-500 space-x-4 flex-wrap gap-y-1">
+                          <div
+                            className="flex items-center"
+                            title="When this row was saved to the database"
+                          >
+                            <Clock className="h-4 w-4 mr-1 text-gray-400" />
+                            <span className="text-gray-600">
+                              Added: {formatAddedToDatabase(tender.created_at)}
+                            </span>
+                          </div>
                           <div className="flex items-center">
                             <Calendar className="h-4 w-4 mr-1" />
-                            {formatDate(tender.tender_date)}
+                            Notice: {formatDate(tender.tender_date)}
                           </div>
                           {tender.detailed_info?.deadline && (
                             <div className="flex items-center">
@@ -549,7 +659,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) =>
                           )}
                         </div>
                         
-                        <div className="flex items-center space-x-2">
+                        <div className="flex items-center space-x-2 flex-wrap gap-y-2">
                           {tender.is_processed && (
                             <button
                               onClick={() => openModal(tender)}
@@ -558,6 +668,31 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) =>
                               <Eye className="h-4 w-4 mr-1" />
                               View Details
                             </button>
+                          )}
+                          {!tender.is_processed && tender.url && currentUser && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void retryDetailExtraction(tender, false)}
+                                disabled={retryingId === tender.id || bulkRetrying}
+                                className="inline-flex items-center px-3 py-2 border border-amber-300 bg-amber-50 text-amber-900 rounded-lg hover:bg-amber-100 transition-colors text-sm font-medium disabled:opacity-50"
+                                title="Re-run Agent 2 detail extraction for this tender"
+                              >
+                                <RefreshCw
+                                  className={`h-4 w-4 mr-1 ${retryingId === tender.id ? 'animate-spin' : ''}`}
+                                />
+                                Retry details
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void retryDetailExtraction(tender, true)}
+                                disabled={retryingId === tender.id || bulkRetrying}
+                                className="inline-flex items-center px-2 py-2 text-xs font-medium text-amber-800 hover:text-amber-950 underline-offset-2 hover:underline disabled:opacity-50"
+                                title="Same as Retry details but skips Agent 2 deadline / date filtering (for stubborn listings)"
+                              >
+                                No date filter
+                              </button>
+                            </>
                           )}
                           <a
                             href={tender.url}
@@ -568,20 +703,23 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh }) =>
                           >
                             <ExternalLink className="h-4 w-4" />
                           </a>
-                          <button
-                            onClick={() => requestDelete(tender)}
-                            className="inline-flex items-center p-2 text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
-                            title="Delete tender"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                          {canDelete && (
+                            <button
+                              onClick={() => requestDelete(tender)}
+                              className="inline-flex items-center p-2 text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
+                              title="Delete tender (super admin only)"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
               </div>
-            ))
+            );
+            })
           )}
         </div>
 

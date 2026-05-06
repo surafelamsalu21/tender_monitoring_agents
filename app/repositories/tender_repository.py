@@ -469,6 +469,11 @@ class TenderRepository:
             existing.processed_at = datetime.utcnow()
             existing.processing_status = "processed"
 
+            db_tender = db.query(Tender).filter(Tender.id == existing.tender_id).first()
+            if db_tender:
+                db_tender.is_processed = True
+                db_tender.updated_at = datetime.utcnow()
+
             if detailed_title:
                 self._maybe_upgrade_tender_title_from_detail(
                     db, existing.tender_id, detailed_title
@@ -597,15 +602,66 @@ class TenderRepository:
         t.title = dt[:500]
         t.updated_at = datetime.utcnow()
     
-    def get_unnotified_tenders(self, db: Session, only_passed: bool = True) -> List[Tender]:
+    def get_unnotified_tenders(
+        self,
+        db: Session,
+        only_passed: bool = True,
+        require_processed: bool = False,
+    ) -> List[Tender]:
         """
-        Returns all non-notified tenders, defaulting to opportunities
-        that passed checklist screening.
+        Returns non-notified tenders.
+
+        - only_passed: restrict to checklist-recommended rows (passes_screening).
+        - require_processed: when True, only rows with Agent 2 complete (is_processed).
+          Use for fallback digest so we never mark "notified" before detail extraction.
         """
         query = db.query(Tender).filter(Tender.is_notified == False)
         if only_passed:
             query = query.filter(Tender.passes_screening == True)
+        if require_processed:
+            query = query.filter(Tender.is_processed == True)
         return query.all()
+
+    @staticmethod
+    def tender_to_agent2_basic_payload(tender: Tender) -> Dict[str, Any]:
+        """Rebuild Agent-1-shaped dict from a DB row for Agent 2 / retry."""
+        step3 = tender.screening_step3 if isinstance(tender.screening_step3, dict) else {}
+        deadline_str = None
+        if step3.get("deadline"):
+            deadline_str = str(step3["deadline"])
+        elif tender.tender_date:
+            deadline_str = tender.tender_date.strftime("%Y-%m-%d")
+        screening: Dict[str, Any] = {
+            "unrelated_to_precise_scope": False,
+            "step1": tender.screening_step1 if isinstance(tender.screening_step1, dict) else {},
+            "step2": tender.screening_step2 if isinstance(tender.screening_step2, dict) else {},
+            "step3": step3,
+            "yes_count": tender.screening_yes_count or 0,
+            "passes_filter": bool(tender.passes_screening),
+            "screening_version": tender.screening_version or "v1_checklist",
+        }
+        return {
+            "id": tender.id,
+            "title": tender.title,
+            "url": tender.url,
+            "date": deadline_str,
+            "description": tender.description or "",
+            "screening": screening,
+            "date_status": "unknown",
+        }
+
+    def get_pending_detail_tenders(
+        self,
+        db: Session,
+        *,
+        only_passed_screening: bool = True,
+        limit: int = 50,
+    ) -> List[Tender]:
+        """Tenders with no successful Agent 2 flag (is_processed False), for bulk retry."""
+        q = db.query(Tender).filter(Tender.is_processed == False)
+        if only_passed_screening:
+            q = q.filter(Tender.passes_screening == True)
+        return q.order_by(Tender.created_at.asc()).limit(max(1, min(limit, 100))).all()
     
     def get_tenders_with_keywords(self, db: Session, keywords: List[str], limit: int = 100) -> List[Tender]:
         """

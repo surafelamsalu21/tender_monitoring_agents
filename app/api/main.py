@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 
 from app.auth import get_current_user, router as auth_router
 from app.auth.admin_router import router as admin_router
-from app.api.routes import tenders, pages, keywords, system
+from app.api.routes import tenders, pages, keywords, system, backup
 
 api_router = APIRouter()
 
@@ -49,4 +49,11 @@ api_router.include_router(
     prefix="/system",
     tags=["system"],
     dependencies=[Depends(get_current_user)]
+)
+
+api_router.include_router(
+    backup.router,
+    prefix="/backup",
+    tags=["backup"],
+    dependencies=[Depends(get_current_user)],
 )

@@ -159,8 +159,9 @@ async def run_simple_pipeline(
             extracted.append(tender)
 
     filtered_keys = {identity_key_fn(t) for t in extracted}
+    # Agent 2 now runs for all newly saved rows (not only strong matches).
     tenders_for_agent2: List[Dict[str, Any]] = []
-    for tender in filtered_for_agent2:
+    for tender in extracted:
         if identity_key_fn(tender) in filtered_keys:
             tenders_for_agent2.append(tender)
 

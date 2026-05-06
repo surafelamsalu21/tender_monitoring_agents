@@ -97,6 +97,28 @@ async def get_extraction_status():
     }
 
 
+@app.get("/scheduler-status")
+async def get_scheduler_status():
+    """Return cadence + last/next run timestamps so the Settings UI can display real status."""
+    if not scheduler:
+        return {
+            "active": False,
+            "interval_hours": settings.CRAWL_INTERVAL_HOURS,
+            "in_progress": False,
+            "started_at": None,
+            "last_run_at": None,
+            "next_run_at": None,
+        }
+    return {
+        "active": bool(getattr(scheduler, "running", False)),
+        "interval_hours": settings.CRAWL_INTERVAL_HOURS,
+        "in_progress": getattr(scheduler, "extraction_in_progress", False),
+        "started_at": getattr(scheduler, "extraction_started_at", None),
+        "last_run_at": getattr(scheduler, "last_extraction_at", None),
+        "next_run_at": getattr(scheduler, "next_extraction_at", None),
+    }
+
+
 @app.post("/trigger-extraction")
 async def trigger_manual_extraction(force: bool = Query(True)):
     """Manually trigger tender extraction. Use force=false to respect crawl_frequency_hours."""

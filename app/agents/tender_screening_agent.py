@@ -22,6 +22,7 @@ Each output object:
 Screening rule:
 - A relevant opportunity must score at least 3 YES out of 5.
 - Set passes=true only when yes_count>=3. Set passes=false for 0, 1, or 2 YES.
+- Geography is a hard gate: passes MUST be false when geographic_fit is false, even if yes_count>=3.
 
 How to score honestly:
 - Each criterion is YES ONLY when there is concrete textual evidence in the title or description.
@@ -56,16 +57,19 @@ Step 1 criteria:
    NO for: pure goods supply/delivery/installation, construction/civil works, graphic design, videography, photography, film/media production, recruitment/HR, audit/accounting, legal drafting, translation, printing, vehicle supply, security, cleaning.
 
 4. geographic_fit:
-   YES only when the WORK ITSELF is in Ethiopia OR East Africa (Ethiopia, Kenya, Uganda, Tanzania, Rwanda, Burundi, South Sudan, Somalia, Djibouti, Eritrea, Sudan).
-   Africa-wide opportunities are YES only if Ethiopia or East Africa is explicitly eligible/included.
+   YES only when the WORK ITSELF is in one or more of these countries:
+   Burundi, Comoros, Djibouti, Eritrea, Ethiopia, Kenya, Rwanda, Somalia, South Sudan, Tanzania, Uganda, Seychelles, Madagascar.
+   Africa-wide opportunities are YES only if at least one listed country is explicitly eligible/included.
    NO for work in: Asia, Pacific Islands (e.g. Papua New Guinea), Americas, Caribbean, Europe (e.g. Italy/Brindisi), Middle East, or West/Central/Southern/North Africa only (e.g. Nigeria, Ghana, Senegal, Egypt, South Africa, DRC).
    If the title or description names a non-East-African country/city as the place of work, geographic_fit is NO regardless of who the buyer is.
+   geographic_fit is mandatory for final passing.
 
 5. eligibility:
    YES if for-profit consulting firms are eligible OR eligibility is unclear (and not explicitly restricted).
    NO if explicitly restricted to NGOs only, UN agencies only, government only, universities only, or individuals only.
 
 Set unrelated=true only for spam or clearly not a real procurement notice.
+Do not invent or expand the title/description: if the row looks like a bogus placeholder (e.g. only a URL slug, error-page text), set unrelated=true and passes=false.
 No markdown. No extra keys."""
 
 
@@ -94,7 +98,10 @@ def _merge_legacy_screening(
     else:
         yes_count = sum(1 for v in step1.values() if v)
 
+    geographic_fit = bool(step1.get("geographic_fit"))
     passes = bool(row.get("passes", yes_count >= 3))
+    # Enforce geography as a hard gate regardless of model drift.
+    passes = passes and geographic_fit
 
     date_s = str(item.get("date") or "").strip()
     screening: Dict[str, Any] = {

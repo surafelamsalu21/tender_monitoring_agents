@@ -236,6 +236,32 @@ class EnhancedEmailService:
             emails_sent = len(sent_details)
             success = emails_sent > 0
 
+            if success:
+                ids_to_mark: List[int] = []
+                one_tid = email_content.get("tender_id") or tender_data.get("id")
+                if one_tid is not None:
+                    try:
+                        ids_to_mark.append(int(one_tid))
+                    except (TypeError, ValueError):
+                        logger.warning("Invalid tender_id in intelligent email composition: %r", one_tid)
+
+                # Digest path: include all involved tender IDs.
+                many_ids = tender_data.get("tender_ids") or email_content.get("tender_ids") or []
+                if isinstance(many_ids, list):
+                    for raw in many_ids:
+                        try:
+                            ids_to_mark.append(int(raw))
+                        except (TypeError, ValueError):
+                            continue
+
+                unique_ids = sorted(set(ids_to_mark))
+                if unique_ids:
+                    rows = db.query(Tender).filter(Tender.id.in_(unique_ids)).all()
+                    for row in rows:
+                        row.is_notified = True
+                        row.updated_at = datetime.utcnow()
+                    db.commit()
+
             return {
                 'success': success,
                 'emails_sent': emails_sent,

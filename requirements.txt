@@ -24,4 +24,5 @@ email-validator
 python-jose[cryptography]
 passlib[bcrypt]
 python-dateutil
+pypdf
 pytest>=8.0

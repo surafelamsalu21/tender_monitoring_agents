@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage
 
+from app.agents.page_sanity import markdown_indicates_error_or_empty_notice
 from app.agents.screening_prompt import PRECISE_SCREENING_CHECKLIST_MARKDOWN
 from app.core.config import settings
 from app.core.llm_factory import get_chat_llm
@@ -115,6 +116,17 @@ class TenderExtractionAgent:
         """
         _ = include_all_opportunities  # backward compatibility
 
+        sanity = markdown_indicates_error_or_empty_notice(
+            page_content or "", http_status=None
+        )
+        if sanity:
+            logger.info(
+                "Agent 1: page looks like an error/empty shell (%s); not extracting tenders",
+                sanity,
+            )
+            pipeline_tty(f"[AGENT1] · skipped ({sanity})")
+            return []
+
         if use_fast_agent1_pipeline():
             try:
                 out = await self._run_fast_pipeline(page_content, keyword_hints, page_url=page_url)
@@ -196,10 +208,13 @@ class TenderExtractionAgent:
 1. Extract ALL tender opportunities visible in the content
 2. For each opportunity, complete Step 1 (5 YES/NO criteria) and calculate yes_count
 3. Include ONLY opportunities with yes_count >= 3. Drop 0/5, 1/5, and 2/5 rows.
-4. Set passes_filter = true for every included row. Do not include low-match rows with passes_filter=false.
-5. Complete Step 2 (characteristics, signals, concerns) and Step 3 (title, source, country, type, deadline, budget, link)
-6. ALL output text must be in English (use source_language field to tag original language)
-7. Be strict: generic goods, vehicles, equipment, security, construction, logistics, events, or IT procurement should be omitted unless it clearly matches Precise's sectors/activities/geography.
+4. Geography is a strict gate: INCLUDE only if geographic_fit=true for one or more of these countries: Burundi, Comoros, Djibouti, Eritrea, Ethiopia, Kenya, Rwanda, Somalia, South Sudan, Tanzania, Uganda, Seychelles, Madagascar. If geographic_fit=false, OMIT even when yes_count>=3.
+5. Set passes_filter = true for every included row. Do not include low-match rows with passes_filter=false.
+6. Complete Step 2 (characteristics, signals, concerns) and Step 3 (title, source, country, type, deadline, budget, link)
+7. ALL output text must be in English (use source_language field to tag original language)
+8. Be strict: generic goods, vehicles, equipment, security, construction, logistics, events, or IT procurement should be omitted unless it clearly matches Precise's sectors/activities/geography.
+9. NEVER invent opportunities. If the content is an HTTP error page, soft-404, "not found", access denied, login wall, or has no real procurement notices, return an empty JSON array [].
+10. Every field in Step 3 must be traceable to text in the content; do not fabricate deadlines, budgets, organizations, or links.
 
 === OUTPUT FORMAT ===
 Return ONLY a JSON array of opportunity objects.
@@ -432,9 +447,13 @@ Extract opportunities as a JSON array only."""
             if yes_count < 3:
                 continue
 
+            # Geography is a hard gate (allowed country list only).
+            if not bool(step1.get("geographic_fit")):
+                continue
+
             # Enrich screening data
             screening["yes_count"] = yes_count
-            screening["passes_filter"] = yes_count >= 3
+            screening["passes_filter"] = yes_count >= 3 and bool(step1.get("geographic_fit"))
             screening["unrelated_to_precise_scope"] = False
             screening.setdefault("step2", {})
             screening.setdefault("step3", {})

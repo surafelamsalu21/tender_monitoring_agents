@@ -124,6 +124,10 @@ export interface Stats {
   /** Low match — Step 1 yes_count 1–2 (still visible in list) */
   lowMatch: number;
   pages: number;
+  /** Rows inserted today (user's local calendar day, from DB created_at) */
+  addedToday: number;
+  addedTodayRecommended: number;
+  addedTodayLowMatch: number;
 }
 
 export interface SystemStatus {

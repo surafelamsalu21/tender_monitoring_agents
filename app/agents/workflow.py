@@ -202,7 +202,7 @@ class TenderAgent:
                 if bool((t.get("screening") or {}).get("passes_filter"))
             ]
 
-            # filtered_tenders / Agent 2 input: strong matches only when date pipeline is on (saves detail cost).
+            # Keep this for reporting, but Agent 2 now runs for all kept rows.
             if state.get('enable_date_filtering', True):
                 filtered_tenders = strong_matches
             else:
@@ -212,22 +212,22 @@ class TenderAgent:
             state['filtered_tenders'] = filtered_tenders
             state['filtered_count'] = len(all_tenders) - len(filtered_tenders)
 
-            # DB1: all kept rows (weak + strong). Agent 2: strong only when date filtering enabled.
+            # DB1: all kept rows (weak + strong). Agent 2: all kept rows as requested.
             state['extracted_tenders'] = all_tenders
-            state['tenders_for_agent2'] = filtered_tenders
+            state['tenders_for_agent2'] = all_tenders
 
             state['agent1_completed'] = True
 
             elapsed = time.time() - start_time
             logger.info(f"Agent 1 completed in {elapsed:.1f}s:")
             logger.info(f"   Agent 1 kept (non-excluded): {len(all_tenders)}")
-            logger.info(f"   Strong matches (Agent 2 queue): {len(filtered_tenders)}")
-            logger.info(f"   Low-match only (saved, no Agent 2): {state['filtered_count']}")
+            logger.info(f"   Strong matches: {len(filtered_tenders)}")
+            logger.info(f"   Low-match rows: {state['filtered_count']}")
             logger.info(f"   For DB1: {len(state['extracted_tenders'])}")
             logger.info(f"   For Agent 2: {len(state['tenders_for_agent2'])}")
             pipeline_tty(
                 f"[AGENT1] · done in {elapsed:.1f}s | kept={len(all_tenders)} | "
-                f"strong→A2={len(filtered_tenders)}"
+                f"all→A2={len(state['tenders_for_agent2'])}"
             )
 
             return state

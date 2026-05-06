@@ -43,6 +43,9 @@ yarn-error.log*
 *.sqlite
 *.sqlite3
 
+# Database backups (created by app/services/db_backup.py)
+/backups/
+
 # IDE
 .vscode/
 .idea/

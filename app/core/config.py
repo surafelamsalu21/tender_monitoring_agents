@@ -29,13 +29,21 @@ class Settings(BaseSettings):
     
     # Database
     DATABASE_URL: str = Field(default="sqlite:///./tender_monitoring.db", env="DATABASE_URL")
+
+    # Database backups (SQLite only)
+    BACKUP_ENABLED: bool = Field(default=True, env="BACKUP_ENABLED")
+    BACKUP_DIR: str = Field(default="backups", env="BACKUP_DIR")
+    BACKUP_INTERVAL_HOURS: int = Field(default=24, env="BACKUP_INTERVAL_HOURS")
+    BACKUP_RETENTION: int = Field(default=30, env="BACKUP_RETENTION")
+    # Delay before the first backup runs after startup (avoids contention with init).
+    BACKUP_INITIAL_DELAY_SECONDS: int = Field(default=300, env="BACKUP_INITIAL_DELAY_SECONDS")
     
     # LLM Provider
     LLM_PROVIDER: str = Field(default="openai", env="LLM_PROVIDER")
 
     # OpenAI
     OPENAI_API_KEY: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
-    OPENAI_MODEL: str = Field(default="gpt-4o-mini", env="OPENAI_MODEL")
+    OPENAI_MODEL: str = Field(default="gpt-5.5", env="OPENAI_MODEL")
 
     # Ollama
     OLLAMA_BASE_URL: str = Field(default="http://localhost:11434", env="OLLAMA_BASE_URL")
@@ -83,7 +91,8 @@ class Settings(BaseSettings):
     PIPELINE_TTY_PROGRESS: bool = Field(default=True, env="PIPELINE_TTY_PROGRESS")
 
     # Crawling Configuration
-    CRAWL_INTERVAL_HOURS: int = Field(default=3, env="CRAWL_INTERVAL_HOURS")
+    # Fixed cadence: scheduled extraction runs every CRAWL_INTERVAL_HOURS hours.
+    CRAWL_INTERVAL_HOURS: int = Field(default=12, env="CRAWL_INTERVAL_HOURS")
     MAX_CONCURRENT_CRAWLS: int = Field(default=5, env="MAX_CONCURRENT_CRAWLS")
     REQUEST_TIMEOUT: int = Field(default=30, env="REQUEST_TIMEOUT")
 

@@ -7,10 +7,15 @@ import re
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urljoin, urlparse
+import asyncio
 from langchain_core.messages import HumanMessage
 
 from app.core.llm_factory import get_chat_llm
 from app.services.scraper import TenderScraper
+from app.agents.page_sanity import (
+    http_status_is_hard_failure,
+    markdown_indicates_error_or_empty_notice,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,18 +62,55 @@ class TenderDetailAgent:
                     return self._create_skipped_details(basic_tender, "Tender expired or too old")
             
             # Step 1: Scrape the content of the individual tender page
-            page_content = await self._scrape_tender_page(tender_url)
+            page_content, page_http_status = await self._scrape_tender_page(tender_url)
             
             if not page_content:
-                logger.error(f"Agent 2: Failed to scrape tender page: {tender_url}")
-                return self._create_fallback_details(basic_tender, "Failed to scrape page")
+                msg = "Failed to scrape page"
+                if page_http_status is not None:
+                    msg = f"Failed to scrape page (HTTP {page_http_status})"
+                logger.error("Agent 2: %s: %s", msg, tender_url)
+                return self._create_fallback_details(basic_tender, msg)
+
+            sanity = markdown_indicates_error_or_empty_notice(
+                page_content, http_status=page_http_status
+            )
+            if sanity:
+                logger.info(
+                    "Agent 2: refusing detail extraction (%s): %s",
+                    sanity,
+                    tender_url[:80],
+                )
+                return self._create_fallback_details(
+                    basic_tender, f"Not a valid notice page: {sanity}"
+                )
             
             # Step 2: Extract detailed tender information using the LLM, with focus on date fields
-            detailed_info = await self._extract_detailed_info_with_dates(page_content, basic_tender)
+            detailed_info = await self._extract_detailed_info_with_dates(
+                page_content, basic_tender, page_http_status=page_http_status
+            )
             
             if not detailed_info:
                 logger.error(f"Agent 2: Failed to extract details from: {tender_url}")
                 return self._create_fallback_details(basic_tender, "Failed to extract details")
+
+            if detailed_info.get("extraction_status") == "failed":
+                return self._create_fallback_details(
+                    basic_tender,
+                    str(
+                        detailed_info.get("error_message")
+                        or "Model reported extraction failure"
+                    ),
+                )
+
+            if self._detail_missing_substance(detailed_info):
+                logger.info(
+                    "Agent 2: no substantive fields after extraction; refusing invented notice: %s",
+                    tender_url[:80],
+                )
+                return self._create_fallback_details(
+                    basic_tender,
+                    "No substantive procurement fields extracted (model output empty or unusable)",
+                )
             
             # Step 3: Final step, validate extracted dates from the detailed info
             if not skip_date_validation:
@@ -119,9 +161,12 @@ class TenderDetailAgent:
             logger.warning(f"Error in pre-validation: {e}")
             return True  # If there's an error, err on the side of processing
     
-    async def _scrape_tender_page(self, tender_url: str) -> Optional[str]:
+    async def _scrape_tender_page(
+        self, tender_url: str
+    ) -> tuple[Optional[str], Optional[int]]:
         """
-        Scrapes the tender page using the TenderScraper service and returns its content (in markdown).
+        Scrapes the tender page using the TenderScraper service.
+        Returns (markdown_or_none, http_status_or_none).
         """
         tender_url = await self._repair_undp_detail_url(tender_url) or tender_url
         try:
@@ -129,26 +174,110 @@ class TenderDetailAgent:
             
             async with TenderScraper() as scraper:
                 result = await scraper.scrape_page(tender_url)
+                code = result.get("status_code")
                 
                 if result['status'] == 'success':
-                    content = result['markdown']
-                    logger.info(f"Successfully scraped {len(content)} characters from {tender_url}")
-                    return content
+                    if http_status_is_hard_failure(code):
+                        logger.error(
+                            "Scrape reported success but HTTP %s for %s",
+                            code,
+                            tender_url,
+                        )
+                        return None, code
+                    content = result.get("markdown") or ""
+                    if self._is_pdf_url(tender_url) and self._looks_minimal_or_blocked(content):
+                        pdf_text = await self._scrape_pdf_direct(tender_url)
+                        if pdf_text:
+                            return pdf_text, code
+                    logger.info(
+                        "Successfully scraped %s characters from %s",
+                        len(content),
+                        tender_url,
+                    )
+                    return content, code
                 else:
                     error = result.get('error', 'Unknown error')
                     logger.error(f"Scraping failed for {tender_url}: {error}")
+                    if self._is_pdf_url(tender_url):
+                        pdf_text = await self._scrape_pdf_direct(tender_url)
+                        if pdf_text:
+                            return pdf_text, code
                     if self._should_use_playwright_detail_fallback(tender_url, error):
-                        return await self._scrape_detail_with_playwright(tender_url)
-                    return None
+                        text = await self._scrape_detail_with_playwright(tender_url)
+                        return text, None
+                    return None, code
                     
         except Exception as e:
             logger.error(f"Exception while scraping {tender_url}: {e}")
             if self._is_undp_url(tender_url):
-                return await self._scrape_detail_with_playwright(tender_url)
-            return None
+                text = await self._scrape_detail_with_playwright(tender_url)
+                return text, None
+            return None, None
 
     def _is_undp_url(self, url: str) -> bool:
         return urlparse(str(url or "")).netloc.lower() == "procurement-notices.undp.org"
+
+    @staticmethod
+    def _is_pdf_url(url: str) -> bool:
+        return str(url or "").lower().split("?")[0].endswith(".pdf")
+
+    @staticmethod
+    def _looks_minimal_or_blocked(content: str) -> bool:
+        txt = (content or "").strip().lower()
+        if len(txt) < 250:
+            return True
+        return (
+            "blocked by anti-bot" in txt
+            or "no_content_elements" in txt
+            or "minimal_text" in txt
+        )
+
+    async def _scrape_pdf_direct(self, url: str) -> Optional[str]:
+        """Direct PDF extraction fallback for URLs that are PDF files."""
+        def _read_pdf() -> Optional[str]:
+            import io
+            import requests
+            try:
+                from pypdf import PdfReader  # type: ignore[reportMissingImports]
+            except Exception as exc:
+                logger.error(
+                    "Agent 2: pypdf is required for direct PDF fallback but is unavailable: %s",
+                    exc,
+                )
+                return None
+
+            resp = requests.get(
+                url,
+                timeout=30,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            if resp.status_code >= 400:
+                return None
+            ctype = str(resp.headers.get("content-type", "")).lower()
+            if "pdf" not in ctype and not self._is_pdf_url(url):
+                return None
+            reader = PdfReader(io.BytesIO(resp.content))
+            chunks: List[str] = []
+            for page in reader.pages[:80]:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    chunks.append(page_text.strip())
+            text = "\n\n".join(chunks).strip()
+            return text or None
+
+        try:
+            text = await asyncio.to_thread(_read_pdf)
+            if text and len(text) > 120:
+                logger.info(
+                    "Agent 2: direct PDF fallback extracted %s chars from %s",
+                    len(text),
+                    url,
+                )
+                return text
+            return None
+        except Exception as exc:
+            logger.warning("Agent 2: direct PDF fallback failed for %s: %s", url, exc)
+            return None
 
     def _should_use_playwright_detail_fallback(self, url: str, error: str) -> bool:
         if not self._is_undp_url(url):
@@ -256,8 +385,50 @@ class TenderDetailAgent:
             logger.error("Playwright detail fallback failed for %s: %s", tender_url, exc)
             return None
     
-    async def _extract_detailed_info_with_dates(self, page_content: str, 
-                                              basic_tender: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _nonempty_str(val: Any) -> str:
+        if val is None:
+            return ""
+        s = str(val).strip()
+        if s.lower() in ("null", "none", "n/a", "na"):
+            return ""
+        return s
+
+    def _detail_missing_substance(self, detailed_info: Dict[str, Any]) -> bool:
+        """
+        True when the model returned no usable notice fields — treat as failure
+        so we never persist a fake 'completed' extraction.
+        """
+        if detailed_info.get("extraction_status") in ("failed", "skipped"):
+            return False
+        d = detailed_info
+        if self._nonempty_str(d.get("detailed_title")):
+            return False
+        if len(self._nonempty_str(d.get("detailed_description"))) > 30:
+            return False
+        if len(self._nonempty_str(d.get("requirements"))) > 30:
+            return False
+        if len(self._nonempty_str(d.get("additional_details"))) > 30:
+            return False
+        if d.get("deadline") or d.get("submission_deadline"):
+            return False
+        if self._nonempty_str(d.get("tender_value")):
+            return False
+        if self._nonempty_str(d.get("duration")):
+            return False
+        ci = d.get("contact_info")
+        if isinstance(ci, dict):
+            for k in ("organization", "email", "phone", "contact_person", "address"):
+                if self._nonempty_str(ci.get(k)):
+                    return False
+        return True
+
+    async def _extract_detailed_info_with_dates(
+        self,
+        page_content: str,
+        basic_tender: Dict[str, Any],
+        page_http_status: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Uses the LLM to extract detailed and date-focused information from the given tender page content.
         The prompt given to the LLM emphasizes date normalization and urgency.
@@ -301,6 +472,13 @@ Return ONLY the JSON object with no additional text.
             detailed_info = self._parse_detail_response(response_text)
 
             if detailed_info:
+                if detailed_info.get("extraction_status") == "failed":
+                    return {
+                        "extraction_status": "failed",
+                        "error_message": detailed_info.get("error_message")
+                        or "Model reported extraction failure",
+                    }
+
                 from app.agents.portal_detail_hints import enrich_detail_from_page_markdown
 
                 detailed_info = enrich_detail_from_page_markdown(
@@ -312,6 +490,21 @@ Return ONLY the JSON object with no additional text.
                 detailed_info["source_url"] = basic_tender.get("url")
                 if not detailed_info.get("full_content"):
                     detailed_info["full_content"] = page_content[:400_000]
+
+                bad = markdown_indicates_error_or_empty_notice(
+                    page_content, http_status=page_http_status
+                )
+                if bad:
+                    return {
+                        "extraction_status": "failed",
+                        "error_message": f"Content sanity check failed after LLM: {bad}",
+                    }
+
+                if self._detail_missing_substance(detailed_info):
+                    return {
+                        "extraction_status": "failed",
+                        "error_message": "No substantive fields in model output",
+                    }
 
                 return detailed_info
             else:
@@ -326,6 +519,8 @@ Return ONLY the JSON object with no additional text.
                     heur["source_url"] = basic_tender.get("url")
                     heur["full_content"] = page_content[:400_000]
                     heur["extraction_status"] = "heuristic"
+                    if self._detail_missing_substance(heur):
+                        return None
                     return heur
                 return None
                 
@@ -340,7 +535,13 @@ Return ONLY the JSON object with no additional text.
         Provides clear requirements and date handling logic.
         """
         return f"""You are Agent 2, a careful procurement detail extraction specialist.
-This is Phase 2 after a listing page identified a possible tender. Your job is to read the FULL TENDER PAGE CONTENT and extract only information supported by that content.
+This is Phase 2 after a listing page identified a possible tender. Your job is to read the FULL TENDER PAGE CONTENT and extract only information that is explicitly supported by that content.
+
+ANTI-HALLUCINATION (STRICT):
+- If the page is an HTTP error, soft-404, "page not found", access denied, maintenance message, login wall with no public notice text, or otherwise contains NO real procurement notice, you MUST NOT invent a tender.
+- Do NOT fill fields from guesses, general knowledge, or from the "BASIC TENDER INFORMATION" block alone when the page body does not support those facts.
+- Do NOT fabricate deadlines, budgets, contacts, organizations, or scope. When in doubt, use null.
+- If there is no extractable procurement notice, set "extraction_status" to "failed", set "error_message" to a short reason (e.g. "error page", "no notice content"), and set all other substantive fields to null.
 
 Return ONLY one valid JSON object. No markdown fences. No comments. No text before or after JSON.
 Use real JSON null for missing values. Never output placeholder strings such as "null", "N/A", "unknown", "not specified", "Issuing organization", or "Budget/estimated value".
@@ -380,7 +581,10 @@ OUTPUT SCHEMA:
   "additional_details": "important fees, site visits, clarification dates, submission portal/instructions, lots, contract number, or null",
   "tender_type": "RFQ|RFP|EOI|TOR|bid notice|consultancy|goods|works|services|grant|other, or null",
   "procurement_method": "open tender, restricted, quotation, QCBS, CQS, direct procurement, etc., or null",
-  "categories": "comma-separated sectors/categories, or null"
+  "categories": "comma-separated sectors/categories, or null",
+
+  "extraction_status": "ok or failed — use failed when the page is not a real notice or has no extractable content",
+  "error_message": "non-null only when extraction_status is failed; short factual reason"
 }}
 
 DEADLINE RULES:
@@ -410,6 +614,7 @@ QUALITY RULES:
 - Do not invent missing values. Use null.
 - If the page is a PDF/download notice, still extract from visible text and links.
 - Be concise but complete; do not copy the whole page into fields.
+- On success, set extraction_status to "ok" or omit it; on failure, set extraction_status to "failed" and error_message.
 """
     
     def _validate_extracted_dates(self, detailed_info: Dict[str, Any], 

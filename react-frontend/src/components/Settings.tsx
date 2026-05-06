@@ -1,20 +1,22 @@
 // components/Settings.tsx - Fixed email management functionality
 import React, { useState, useEffect } from 'react';
-import { 
-  Clock, 
-  Mail, 
-  Database, 
-  Server, 
-  CheckCircle, 
-  AlertCircle, 
+import {
+  Clock,
+  Mail,
+  Database,
+  Server,
+  CheckCircle,
+  AlertCircle,
   Loader,
   Plus,
   Trash2,
   Users,
   Send,
-  RefreshCw
+  RefreshCw,
+  Download,
+  HardDrive
 } from 'lucide-react';
-import { apiService } from '../services/api';
+import { apiService, BackupFile, BackupStatus, getAuthToken } from '../services/api';
 
 interface EmailNotificationSettings {
   opportunity_emails: string[];
@@ -46,6 +48,25 @@ export const Settings: React.FC = () => {
   const [processingEmails, setProcessingEmails] = useState<Set<string>>(new Set());
   const [refreshing, setRefreshing] = useState(false);
 
+  // Backup state
+  const [backups, setBackups] = useState<BackupFile[]>([]);
+  const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [backupRunning, setBackupRunning] = useState(false);
+  const [backupError, setBackupError] = useState<string | null>(null);
+  const [deletingBackup, setDeletingBackup] = useState<string | null>(null);
+
+  // Scheduler (extraction) status
+  const [schedulerStatus, setSchedulerStatus] = useState<{
+    active: boolean;
+    interval_hours: number;
+    in_progress: boolean;
+    started_at: string | null;
+    last_run_at: string | null;
+    next_run_at: string | null;
+  } | null>(null);
+  const [schedulerLoading, setSchedulerLoading] = useState(false);
+
   useEffect(() => {
     const fetchSystemStatus = async () => {
       try {
@@ -53,21 +74,122 @@ export const Settings: React.FC = () => {
         const status = await apiService.getSystemStatus();
         setSystemStatus(status);
         setError(null);
-        
+
         // Load existing email settings from database
         await loadEmailSettings();
+        await loadBackups();
+        await loadSchedulerStatus();
       } catch (err) {
         setError('Failed to load system status');
         console.error('Error fetching system status:', err);
         // Still try to load email settings even if system status fails
         await loadEmailSettings();
+        await loadBackups();
+        await loadSchedulerStatus();
       } finally {
         setLoading(false);
       }
     };
-    
+
     fetchSystemStatus();
+
+    // Refresh scheduler status periodically while the user is on this page.
+    const tick = setInterval(() => {
+      loadSchedulerStatus().catch(() => undefined);
+    }, 30_000);
+    return () => clearInterval(tick);
   }, []);
+
+  const loadSchedulerStatus = async () => {
+    setSchedulerLoading(true);
+    try {
+      const status = await apiService.getSchedulerStatus();
+      setSchedulerStatus(status);
+    } catch (err) {
+      console.error('Error loading scheduler status:', err);
+    } finally {
+      setSchedulerLoading(false);
+    }
+  };
+
+  const loadBackups = async () => {
+    setBackupLoading(true);
+    setBackupError(null);
+    try {
+      const response = await apiService.listBackups();
+      setBackups(response.backups || []);
+      setBackupStatus(response.status || null);
+    } catch (err) {
+      console.error('Error loading backups:', err);
+      setBackupError('Failed to load backups');
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  const runBackupNow = async () => {
+    setBackupRunning(true);
+    setBackupError(null);
+    try {
+      const response = await apiService.runBackupNow();
+      if (!response.success) {
+        setBackupError(response.message || 'Backup failed');
+      }
+      await loadBackups();
+    } catch (err: any) {
+      console.error('Error running backup:', err);
+      const detail =
+        err?.response?.data?.detail || err?.message || 'Backup failed';
+      setBackupError(String(detail));
+    } finally {
+      setBackupRunning(false);
+    }
+  };
+
+  const downloadBackup = async (filename: string) => {
+    try {
+      const url = apiService.getBackupDownloadUrl(filename);
+      const token = getAuthToken();
+      const res = await fetch(url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        setBackupError(`Download failed: ${res.status}`);
+        return;
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (err) {
+      console.error('Error downloading backup:', err);
+      setBackupError('Failed to download backup');
+    }
+  };
+
+  const removeBackup = async (filename: string) => {
+    if (!window.confirm(`Delete backup ${filename}? This cannot be undone.`)) {
+      return;
+    }
+    setDeletingBackup(filename);
+    try {
+      const response = await apiService.deleteBackup(filename);
+      if (!response.success) {
+        setBackupError(response.message || 'Delete failed');
+      }
+      await loadBackups();
+    } catch (err: any) {
+      console.error('Error deleting backup:', err);
+      setBackupError(err?.response?.data?.detail || 'Failed to delete backup');
+    } finally {
+      setDeletingBackup(null);
+    }
+  };
 
   const loadEmailSettings = async () => {
     try {
@@ -597,70 +719,242 @@ export const Settings: React.FC = () => {
         )}
       </div>
       
-      {/* Extraction Schedule */}
+      {/* Extraction Schedule (fixed) */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-          <Clock className="h-5 w-5 mr-2" />
-          Extraction Schedule
+        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center justify-between">
+          <span className="flex items-center">
+            <Clock className="h-5 w-5 mr-2" />
+            Extraction Schedule
+          </span>
+          <button
+            onClick={loadSchedulerStatus}
+            disabled={schedulerLoading}
+            className="flex items-center px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50"
+            title="Refresh status"
+          >
+            {schedulerLoading ? (
+              <Loader className="h-4 w-4 mr-1 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4 mr-1" />
+            )}
+            Refresh
+          </button>
         </h3>
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Extraction Frequency
             </label>
-            <select className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50">
-              <option>Every 3 hours</option>
-              <option>Every 6 hours</option>
-              <option>Every 12 hours</option>
-              <option>Every 24 hours</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Last Extraction
-            </label>
             <input
               type="text"
-              value={systemStatus?.recent_activity && systemStatus.recent_activity.length > 0 
-                ? new Date(systemStatus.recent_activity[0].started_at).toLocaleString() 
-                : 'No recent extraction'}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50"
+              value={`Every ${schedulerStatus?.interval_hours ?? 12} hours (fixed)`}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700"
               disabled
             />
+            <p className="text-xs text-gray-500 mt-1">
+              The scheduler runs automatically at this cadence. The cadence is fixed system-wide.
+            </p>
           </div>
-          <button className="mt-2 bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors">
-            Save Schedule
-          </button>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="bg-green-50 p-3 rounded-lg">
+              <div className="text-xs text-gray-600">Status</div>
+              <div className="text-sm font-semibold flex items-center">
+                {schedulerStatus?.active ? (
+                  <>
+                    <span className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></span>
+                    {schedulerStatus.in_progress ? 'Running now' : 'Active'}
+                  </>
+                ) : (
+                  <>
+                    <span className="w-2 h-2 bg-gray-400 rounded-full mr-2"></span>
+                    Stopped
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="bg-primary-50 p-3 rounded-lg">
+              <div className="text-xs text-gray-600">Last extraction</div>
+              <div className="text-sm font-semibold">
+                {schedulerStatus?.last_run_at
+                  ? new Date(schedulerStatus.last_run_at).toLocaleString()
+                  : 'Not yet (since startup)'}
+              </div>
+            </div>
+            <div className="bg-yellow-50 p-3 rounded-lg">
+              <div className="text-xs text-gray-600">Next extraction</div>
+              <div className="text-sm font-semibold">
+                {schedulerStatus?.next_run_at
+                  ? new Date(schedulerStatus.next_run_at).toLocaleString()
+                  : 'Pending'}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Database Settings */}
+      {/* Database Backups */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-          <Database className="h-5 w-5 mr-2" />
-          Database Management
+        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center justify-between">
+          <span className="flex items-center">
+            <Database className="h-5 w-5 mr-2" />
+            Database Backups
+          </span>
+          <button
+            onClick={loadBackups}
+            disabled={backupLoading}
+            className="flex items-center px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50"
+            title="Refresh list"
+          >
+            {backupLoading ? (
+              <Loader className="h-4 w-4 mr-1 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4 mr-1" />
+            )}
+            Refresh
+          </button>
         </h3>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Database Location
-            </label>
-            <input
-              type="text"
-              value="./data/tender_monitoring.db"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50"
-              disabled
-            />
+
+        {backupError && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start">
+            <AlertCircle className="h-4 w-4 text-red-500 mr-2 mt-0.5 flex-shrink-0" />
+            <span className="text-sm text-red-700">{backupError}</span>
           </div>
-          <div className="flex gap-3">
-            <button className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors">
-              Backup Database
-            </button>
-            <button className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition-colors">
-              Clean Old Records
-            </button>
+        )}
+
+        {backupStatus && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+            <div className="bg-primary-50 p-3 rounded-lg">
+              <div className="text-xs text-gray-600">Backups stored</div>
+              <div className="text-xl font-semibold">{backupStatus.count}</div>
+            </div>
+            <div className="bg-green-50 p-3 rounded-lg">
+              <div className="text-xs text-gray-600">Schedule</div>
+              <div className="text-sm font-semibold">
+                {backupStatus.enabled
+                  ? `Every ${backupStatus.interval_hours}h`
+                  : 'Disabled'}
+              </div>
+            </div>
+            <div className="bg-yellow-50 p-3 rounded-lg">
+              <div className="text-xs text-gray-600">Retention</div>
+              <div className="text-sm font-semibold">
+                Keep last {backupStatus.retention}
+              </div>
+            </div>
+            <div className="bg-gray-50 p-3 rounded-lg">
+              <div className="text-xs text-gray-600">Latest</div>
+              <div className="text-sm font-semibold truncate">
+                {backupStatus.latest
+                  ? new Date(backupStatus.latest.created_at).toLocaleString()
+                  : 'None yet'}
+              </div>
+            </div>
           </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-3 mb-4">
+          <button
+            onClick={runBackupNow}
+            disabled={backupRunning}
+            className="flex items-center px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50"
+          >
+            {backupRunning ? (
+              <>
+                <Loader className="h-4 w-4 mr-2 animate-spin" />
+                Backing up...
+              </>
+            ) : (
+              <>
+                <HardDrive className="h-4 w-4 mr-2" />
+                Run Backup Now
+              </>
+            )}
+          </button>
+          {backupStatus?.directory && (
+            <span className="text-xs text-gray-500 truncate" title={backupStatus.directory}>
+              Location: {backupStatus.directory}
+            </span>
+          )}
         </div>
+
+        {backupLoading && backups.length === 0 ? (
+          <div className="flex items-center justify-center py-8 text-gray-500">
+            <Loader className="h-5 w-5 mr-2 animate-spin" />
+            Loading backups...
+          </div>
+        ) : backups.length === 0 ? (
+          <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
+            <Database className="h-8 w-8 mx-auto mb-2 text-gray-400" />
+            <p>No backups yet</p>
+            <p className="text-sm">
+              The first scheduled backup runs ~5 minutes after the server starts.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-hidden border border-gray-200 rounded-lg">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Filename
+                  </th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Created
+                  </th>
+                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Size
+                  </th>
+                  <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 bg-white">
+                {backups.map((b) => (
+                  <tr key={b.filename}>
+                    <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900 font-mono">
+                      {b.filename}
+                    </td>
+                    <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-600">
+                      {new Date(b.created_at).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-600">
+                      {b.size_human}
+                    </td>
+                    <td className="px-4 py-2 whitespace-nowrap text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => downloadBackup(b.filename)}
+                          className="flex items-center px-2 py-1 text-xs bg-primary-100 text-primary-700 rounded hover:bg-primary-200 transition-colors"
+                          title="Download backup"
+                        >
+                          <Download className="h-3 w-3 mr-1" />
+                          Download
+                        </button>
+                        <button
+                          onClick={() => removeBackup(b.filename)}
+                          disabled={deletingBackup === b.filename}
+                          className="flex items-center px-2 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors disabled:opacity-50"
+                          title="Delete backup"
+                        >
+                          {deletingBackup === b.filename ? (
+                            <Loader className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <>
+                              <Trash2 className="h-3 w-3 mr-1" />
+                              Delete
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

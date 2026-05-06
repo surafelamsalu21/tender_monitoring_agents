@@ -180,6 +180,7 @@ CONTENT REQUIREMENTS:
 - In "Next Steps", place exactly two primary actions side-by-side:
   1) View Full Details
   2) Start Proposal Preparation
+- FACTUALITY: Use only facts present in the Agent 2 / screening data below. Never invent deadlines, contacts, budgets, organizations, or requirements. If a field is missing, omit it or write "Not specified in the notice" — do not guess.
 
 TONE AND STYLE:
 ===============
@@ -1095,8 +1096,17 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
             logger.info(f"Agent 3: Creating digest email for {len(tenders_with_details)} tenders")
             digest_email = await self.compose_multiple_tenders_email(tenders_with_details, team_category)
             if digest_email:
+                digest_ids = []
+                for t in tenders_with_details:
+                    tid = t.get("id")
+                    if isinstance(tid, int):
+                        digest_ids.append(tid)
                 email_compositions.append({
-                    'tender_data': {'title': f'Multiple Tenders Digest', 'count': len(tenders_with_details)},
+                    'tender_data': {
+                        'title': 'Multiple Tenders Digest',
+                        'count': len(tenders_with_details),
+                        'tender_ids': digest_ids,
+                    },
                     'email_content': digest_email,
                     'composition_status': 'success',
                     'email_type': 'digest'
