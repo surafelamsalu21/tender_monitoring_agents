@@ -212,7 +212,7 @@ class TenderExtractionAgent:
 5. Set passes_filter = true for every included row. Do not include low-match rows with passes_filter=false.
 6. Complete Step 2 (characteristics, signals, concerns) and Step 3 (title, source, country, type, deadline, budget, link)
 7. ALL output text must be in English (use source_language field to tag original language)
-8. Be strict: generic goods, vehicles, equipment, security, construction, logistics, events, or IT procurement should be omitted unless it clearly matches Precise's sectors/activities/geography.
+8. Prioritize advisory/consulting (TOR, TA, studies, BDS, MEL, strategy, sector-relevant training, policy dialogue). Omit supply-only notices that lack a substantive advisory component. Mixed notices (advisory + supply) may be INCLUDED when the advisory portion satisfies geography, sectors, and activity fit. Generic goods, vehicles, security-only, construction-only, or IT commodity buys remain poor fit unless a substantive advisory workstream in Precise's sectors is clear.
 9. NEVER invent opportunities. If the content is an HTTP error page, soft-404, "not found", access denied, login wall, or has no real procurement notices, return an empty JSON array [].
 10. Every field in Step 3 must be traceable to text in the content; do not fabricate deadlines, budgets, organizations, or links.
 

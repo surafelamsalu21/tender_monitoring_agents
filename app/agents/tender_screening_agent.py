@@ -17,7 +17,13 @@ logger = logging.getLogger(__name__)
 _SCREEN_SYSTEM = """You screen procurement opportunities for Precise, a development consulting firm.
 Input is a JSON array of items (title, url, date, description). Output ONLY a JSON array of the SAME length and order.
 Each output object:
-{"title": same as input, "url": same as input, "yes_count": 0-5, "passes": boolean (true if yes_count>=3), "unrelated": boolean, "flags": {"mission_alignment":bool,"sector_relevance":bool,"activity_fit":bool,"geographic_fit":bool,"eligibility":bool}}
+{"title": same as input, "url": same as input, "yes_count": 0-5, "passes": boolean (true if yes_count>=3), "unrelated": boolean, "engagement": "advisory_only"|"supply_only"|"advisory_and_supply_mixed", "flags": {"mission_alignment":bool,"sector_relevance":bool,"activity_fit":bool,"geographic_fit":bool,"eligibility":bool}}
+
+Advisory vs supply (for engagement and for scoring):
+- Advisory / consulting: TOR/ToR, TA, studies/surveys, BDS, MEL, strategy, training on sectors below, policy dialogue — substantive analytical or capacity-building work, not only delivering goods.
+- Supply / goods-heavy: primary or sole deliverable is equipment, vehicles, commodities, bulk licensing, materials, etc., with no substantive advisory line items.
+- Mixed: both advisory and supply appear — set mission_alignment and activity_fit YES if the advisory part alone would pass; do not fail only because goods are also listed. engagement must be advisory_and_supply_mixed.
+- Supply-only notices: engagement supply_only; mission_alignment and activity_fit should normally be NO unless the text is mislabeled.
 
 Screening rule:
 - A relevant opportunity must score at least 3 YES out of 5.
@@ -32,8 +38,8 @@ How to score honestly:
 Step 1 criteria:
 
 1. mission_alignment:
-   YES if it relates to economic development of firms, farms, or industries (SME growth, enterprise development, farm productivity, industrial development, value chains, market systems, access to finance for businesses, agribusiness, energy for productive use).
-   NO for: pure goods supply (vehicles, spare parts, equipment, calibration systems, office supplies), construction/infrastructure (water/sanitation/WASH, roads, buildings), media/communications (graphic design, videography, photography), and generic services for the buyer (security, cleaning, catering, recruitment, audit, translation, printing).
+   YES if it relates to economic development of firms, farms, or industries (SME growth, enterprise development, farm productivity, industrial development, value chains, market systems, access to finance for businesses, agribusiness, energy for productive use), including substantive TOR/TA/studies/BDS/MEL/strategy/sector training/policy work — including mixed notices where that advisory component is real.
+   NO for: pure goods supply (vehicles, spare parts, equipment, calibration systems, office supplies) with no substantive advisory component; construction/infrastructure (water/sanitation/WASH, roads, buildings); media/communications (graphic design, videography, photography); generic services for the buyer (security, cleaning, catering, recruitment, audit, translation, printing).
 
 2. sector_relevance:
    YES if the WORK ITSELF is connected to at least one of:
@@ -44,7 +50,7 @@ Step 1 criteria:
    NO if the work is in WASH/water/sanitation infrastructure, civil works, generic IT, humanitarian logistics, peacekeeping, media production, or education unrelated to enterprise/finance.
 
 3. activity_fit:
-   YES if the CORE DELIVERABLE is one of:
+   YES if the CORE DELIVERABLE (or substantive advisory portion of a mixed notice) is one of:
    - Private sector development / SMEs
    - Business Development Services (BDS)
    - Access to finance
@@ -54,7 +60,8 @@ Step 1 criteria:
    - Research / surveys / studies (on a topic in criterion 2's sectors)
    - Capacity building / training (in criterion 2's sectors — NOT graphic design, photography, communications, generic IT, language, or driving)
    - Policy / stakeholder engagement
-   NO for: pure goods supply/delivery/installation, construction/civil works, graphic design, videography, photography, film/media production, recruitment/HR, audit/accounting, legal drafting, translation, printing, vehicle supply, security, cleaning.
+   - TOR-led consulting, TA, MEL, strategy
+   NO for: pure goods supply/delivery/installation with no substantive advisory line items, construction/civil works, graphic design, videography, photography, film/media production, recruitment/HR, audit/accounting, legal drafting, translation, printing, vehicle supply, security, cleaning.
 
 4. geographic_fit:
    YES only when the WORK ITSELF is in one or more of these countries:
@@ -68,9 +75,14 @@ Step 1 criteria:
    YES if for-profit consulting firms are eligible OR eligibility is unclear (and not explicitly restricted).
    NO if explicitly restricted to NGOs only, UN agencies only, government only, universities only, or individuals only.
 
+engagement (required on every row):
+- advisory_only — advisory/consulting is the core; goods minor or absent.
+- supply_only — supply/goods is the core; no substantive TOR/TA/study/BDS/MEL/strategy/training/policy deliverables.
+- advisory_and_supply_mixed — both substantive advisory and supply/goods are in scope.
+
 Set unrelated=true only for spam or clearly not a real procurement notice.
 Do not invent or expand the title/description: if the row looks like a bogus placeholder (e.g. only a URL slug, error-page text), set unrelated=true and passes=false.
-No markdown. No extra keys."""
+No markdown. Only these keys per object: title, url, yes_count, passes, unrelated, engagement, flags."""
 
 
 def _chunk(items: List[Dict[str, Any]], n: int) -> List[List[Dict[str, Any]]]:
@@ -103,6 +115,23 @@ def _merge_legacy_screening(
     # Enforce geography as a hard gate regardless of model drift.
     passes = passes and geographic_fit
 
+    engagement_raw = str(row.get("engagement") or "").strip().lower().replace("-", "_")
+    engagement_token: Optional[str] = None
+    if engagement_raw in ("advisory_only", "advisory"):
+        engagement_token = "engagement_advisory_only"
+    elif engagement_raw in ("supply_only", "supply"):
+        engagement_token = "engagement_supply_only"
+    elif engagement_raw in (
+        "advisory_and_supply_mixed",
+        "mixed",
+        "advisory_and_supply",
+    ):
+        engagement_token = "engagement_advisory_and_supply_mixed"
+
+    strategic_signals: List[str] = []
+    if engagement_token:
+        strategic_signals.append(engagement_token)
+
     date_s = str(item.get("date") or "").strip()
     screening: Dict[str, Any] = {
         "unrelated_to_precise_scope": unrelated,
@@ -111,7 +140,7 @@ def _merge_legacy_screening(
         "passes_filter": passes and not unrelated,
         "step2": {
             "opportunity_characteristics": [],
-            "strategic_signals": [],
+            "strategic_signals": strategic_signals,
             "potential_concerns": [],
         },
         "step3": {

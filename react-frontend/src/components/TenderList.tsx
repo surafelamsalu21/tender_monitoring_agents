@@ -16,6 +16,9 @@ import {
   Zap,
   Trash2,
   User,
+  Briefcase,
+  Layers,
+  Package,
   Phone,
   Mail,
   MapPin,
@@ -30,6 +33,12 @@ import {
   formatAddedToDatabase,
   isTenderCreatedLocalToday,
 } from '../utils/tenderDates';
+import {
+  engagementBadgeDisplay,
+  engagementSortRank,
+  tenderMatchesEngagementFilter,
+  type EngagementFilter,
+} from '../utils/engagement';
 
 interface TenderListProps {
   tenders: Tender[];
@@ -38,7 +47,7 @@ interface TenderListProps {
 }
 
 type ViewType = 'processed' | 'all' | 'active' | 'expired';
-type SortType = 'newest' | 'oldest' | 'deadline' | 'urgent';
+type SortType = 'newest' | 'oldest' | 'deadline' | 'urgent' | 'advisory_first';
 
 /** Human-readable countdown; negative days → Expired (not "-1"). */
 function formatDaysUntilDeadlineValue(dv: {
@@ -67,6 +76,26 @@ function formatDaysUntilDeadlineValue(dv: {
   };
 }
 
+function EngagementTypeBadge({ tender }: { tender: Tender }) {
+  const eng = engagementBadgeDisplay(tender.screening_step2?.strategic_signals);
+  if (!eng) return null;
+  const Icon =
+    eng.kind === 'advisory_only'
+      ? Briefcase
+      : eng.kind === 'mixed'
+        ? Layers
+        : Package;
+  return (
+    <span
+      className={`inline-flex items-center text-xs font-medium px-2 py-1 rounded-full border ${eng.className}`}
+      title="From screening: advisory vs supply mix"
+    >
+      <Icon className="h-3 w-3 mr-1 shrink-0" />
+      {eng.label}
+    </span>
+  );
+}
+
 export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, currentUser }) => {
   const canDelete = !!currentUser && (
     currentUser.role === 'super_admin' ||
@@ -79,6 +108,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
   const [selectedCategory, setSelectedCategory] = useState<CategoryType>('all');
   const [selectedView, setSelectedView] = useState<ViewType>('active');
   const [sortBy, setSortBy] = useState<SortType>('newest');
+  const [engagementFilter, setEngagementFilter] = useState<EngagementFilter>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedTender, setSelectedTender] = useState<Tender | null>(null);
   const [detailedTender, setDetailedTender] = useState<Tender | null>(null);
@@ -246,25 +276,60 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
       filtered = filtered.filter(tender => tender.passes_screening === false);
     }
 
+    if (engagementFilter !== 'all') {
+      filtered = filtered.filter((tender) =>
+        tenderMatchesEngagementFilter(
+          tender.screening_step2?.strategic_signals,
+          engagementFilter
+        )
+      );
+    }
+
     // Apply sorting (local "today" rows first, then chosen sort)
     filtered.sort((a, b) => {
       const aToday = isTenderCreatedLocalToday(a.created_at) ? 1 : 0;
       const bToday = isTenderCreatedLocalToday(b.created_at) ? 1 : 0;
+
+      if (sortBy === 'advisory_first') {
+        const ra = engagementSortRank(a.screening_step2?.strategic_signals);
+        const rb = engagementSortRank(b.screening_step2?.strategic_signals);
+        if (rb !== ra) return rb - ra;
+        if (bToday !== aToday) return bToday - aToday;
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
+
       if (bToday !== aToday) return bToday - aToday;
+
+      const tieEngagement = () => {
+        const ra = engagementSortRank(a.screening_step2?.strategic_signals);
+        const rb = engagementSortRank(b.screening_step2?.strategic_signals);
+        if (rb !== ra) return rb - ra;
+        return 0;
+      };
+
       switch (sortBy) {
-        case 'newest':
-          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-        case 'oldest':
-          return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-        case 'deadline':
+        case 'newest': {
+          const t = new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+          return t !== 0 ? t : tieEngagement();
+        }
+        case 'oldest': {
+          const t = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+          return t !== 0 ? t : tieEngagement();
+        }
+        case 'deadline': {
           const deadlineA = a.detailed_info?.deadline || a.tender_date;
           const deadlineB = b.detailed_info?.deadline || b.tender_date;
-          if (!deadlineA && !deadlineB) return 0;
+          if (!deadlineA && !deadlineB) return tieEngagement();
           if (!deadlineA) return 1;
           if (!deadlineB) return -1;
-          return new Date(deadlineA).getTime() - new Date(deadlineB).getTime();
-        case 'urgent':
-          return getUrgencyScore(b) - getUrgencyScore(a);
+          const t =
+            new Date(deadlineA).getTime() - new Date(deadlineB).getTime();
+          return t !== 0 ? t : tieEngagement();
+        }
+        case 'urgent': {
+          const t = getUrgencyScore(b) - getUrgencyScore(a);
+          return t !== 0 ? t : tieEngagement();
+        }
         default:
           return 0;
       }
@@ -495,6 +560,20 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
                     <option value="failed">Low match (1–2/5)</option>
                   </select>
                 </div>
+
+                <select
+                  value={engagementFilter}
+                  onChange={(e) =>
+                    setEngagementFilter(e.target.value as EngagementFilter)
+                  }
+                  className="pl-3 pr-8 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white min-w-[160px]"
+                  title="Filter by advisory vs supply classification from Agent 1"
+                >
+                  <option value="all">All engagement types</option>
+                  <option value="advisory">Advisory (incl. mixed)</option>
+                  <option value="mixed">Mixed only</option>
+                  <option value="supply">Supply-focused only</option>
+                </select>
                 
                 <select
                   value={sortBy}
@@ -505,6 +584,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
                   <option value="oldest">Oldest First</option>
                   <option value="deadline">By Deadline</option>
                   <option value="urgent">By Urgency</option>
+                  <option value="advisory_first">Advisory first</option>
                 </select>
               </div>
             </div>
@@ -542,6 +622,14 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
                 {selectedCategory === 'failed' && (
                   <span className="block mt-2 font-medium">Category filter: low matches only (1–2 of 5 criteria — still shortlisted for visibility).</span>
                 )}
+                {engagementFilter !== 'all' && (
+                  <span className="block mt-2 font-medium">
+                    Engagement filter:{' '}
+                    {engagementFilter === 'advisory' && 'advisory or mixed notices.'}
+                    {engagementFilter === 'mixed' && 'advisory + supply mixed notices only.'}
+                    {engagementFilter === 'supply' && 'supply-focused notices only.'}
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -559,6 +647,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
                   setSearchTerm('');
                   setSelectedCategory('all');
                   setSelectedView('all');
+                  setEngagementFilter('all');
                 }}
                 className="text-primary-600 hover:text-primary-700 font-medium"
               >
@@ -585,7 +674,8 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
                         <h3 className="text-lg font-semibold text-gray-900 group-hover:text-primary-600 transition-colors flex-1 min-w-0">
                           {tender.title}
                         </h3>
-                        <div className="flex items-center gap-2 flex-shrink-0">
+                        <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+                          <EngagementTypeBadge tender={tender} />
                           <span className={`px-3 py-1 rounded-full text-xs font-medium border ${screeningBadgeClasses(tender)}`}>
                             <Tag className="h-3 w-3 inline mr-1" />
                             {screeningBadgeLabel(tender)}
@@ -762,6 +852,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
                     </h3>
                     {selectedTender && (
                       <div className="flex items-center gap-3 mt-2 flex-wrap">
+                        {selectedTender && <EngagementTypeBadge tender={selectedTender} />}
                         <span className={`px-3 py-1 rounded-full text-sm font-medium border ${screeningBadgeClasses(selectedTender)}`}>
                           <Tag className="h-4 w-4 inline mr-1" />
                           {screeningBadgeLabel(selectedTender)}

@@ -59,6 +59,37 @@ def test_screening_prompt_declares_multilingual_handling():
     assert "output in english only" in low
 
 
+def test_screening_prompt_declares_advisory_engagement_tags():
+    from app.agents.screening_prompt import PRECISE_SCREENING_CHECKLIST_MARKDOWN
+
+    assert "engagement_advisory_only" in PRECISE_SCREENING_CHECKLIST_MARKDOWN
+    assert "engagement_supply_only" in PRECISE_SCREENING_CHECKLIST_MARKDOWN
+    assert "engagement_advisory_and_supply_mixed" in PRECISE_SCREENING_CHECKLIST_MARKDOWN
+
+
+def test_fast_screening_merge_maps_engagement_to_strategic_signal():
+    from app.agents.tender_screening_agent import _merge_legacy_screening
+
+    item = {"title": "T", "url": "https://x.test/a", "date": "", "description": ""}
+    row = {
+        "yes_count": 4,
+        "passes": True,
+        "unrelated": False,
+        "engagement": "advisory_and_supply_mixed",
+        "flags": {
+            "mission_alignment": True,
+            "sector_relevance": True,
+            "activity_fit": True,
+            "geographic_fit": True,
+            "eligibility": True,
+        },
+    }
+    out = _merge_legacy_screening(item, row)
+    assert "engagement_advisory_and_supply_mixed" in (
+        out["screening"]["step2"]["strategic_signals"]
+    )
+
+
 def test_unrelated_dropped_even_if_step1_all_yes():
     """Unrelated noise: excluded regardless of Step 1 booleans."""
     agent = TenderExtractionAgent()
@@ -106,13 +137,13 @@ def test_four_of_five_kept_recommended():
 
 
 def test_three_of_five_boundary_recommended():
-    """≥3 YES → passes_filter True (boundary check)."""
+    """≥3 YES with geographic_fit → passes_filter True (boundary check)."""
     agent = TenderExtractionAgent()
     step1 = {
         "mission_alignment": True,
         "sector_relevance": True,
-        "activity_fit": True,
-        "geographic_fit": False,
+        "activity_fit": False,
+        "geographic_fit": True,
         "eligibility_quick_check": False,
     }
     out = agent._validate([_item(step1, url="https://example.com/3of5")])

@@ -20,6 +20,12 @@ Multilingual sources (read in any language; output in English only)
 Optional tagging
 - When the dominant language of THAT opportunity notice (not boilerplate/footer) is not English or is visibly mixed, set `screening.source_language` to a short ISO 639-1-style code (`en`, `fr`, `ar`, `am`, `pt`, `sw`, …) or `mixed` / `unknown`. Omit or use `en` when the substantive notice body is entirely English.
 
+Advisory vs supply (read before Step 1)
+
+- Advisory / consulting (what Precise prioritizes): substantive work such as Terms of Reference / TOR, technical assistance (TA), studies / surveys / assessments, Business Development Services (BDS), MEL (monitoring, evaluation, learning), strategy, training on topics aligned with sector criterion 2, policy dialogue / stakeholder engagement, and similar analytical or capacity-building deliverables — not merely handing over goods.
+- Supply / goods-heavy: the primary or sole deliverable is procurement or delivery of equipment, vehicles, commodities, bulk software licensing, construction materials, or comparable goods, without a substantive advisory/consulting workstream described in the notice.
+- Mixed notices (advisory + supply in the same notice): Score mission_alignment and activity_fit YES if the advisory/consulting component alone would satisfy those criteria (geography and sectors). Do not answer NO solely because the notice also lists goods or installation. If the text is only supply/installation with no substantive TOR/TA/study/BDS/MEL/strategy/training/policy line items, score those criteria NO.
+
 Step 1: Quick Relevance Filter (Yes / No)
 
 Score each of the 5 criteria below as YES or NO, then compute yes_count (0–5).
@@ -36,8 +42,8 @@ How to score honestly:
 
 1. Mission Alignment
    - Does it relate to economic development of firms, farms, or industries?
-   - YES examples: SME growth, enterprise development, agricultural/farm productivity, industrial development, value chains, market systems, access to finance for businesses, agribusiness, energy for productive use.
-   - NO examples: pure goods supply (vehicles, equipment, spare parts, calibration systems, office supplies), construction or infrastructure works (water/sanitation/WASH, roads, buildings), media/communications work (graphic design, videography, photography), generic services for the buyer organization itself (security, cleaning, catering, recruitment, audit, translation, printing).
+   - YES examples: SME growth, enterprise development, agricultural/farm productivity, industrial development, value chains, market systems, access to finance for businesses, agribusiness, energy for productive use; advisory packages including TOR-based assignments, TA, studies/surveys, BDS, MEL, strategy, sector-relevant training, policy dialogue — including mixed notices where this advisory work is substantive (see Advisory vs supply).
+   - NO examples: pure goods supply (vehicles, equipment, spare parts, calibration systems, office supplies) with no substantive advisory component; construction or infrastructure works (water/sanitation/WASH, roads, buildings); media/communications work (graphic design, videography, photography); generic services for the buyer organization itself (security, cleaning, catering, recruitment, audit, translation, printing).
    (JSON key: mission_alignment)
 
 2. Sector Relevance
@@ -61,9 +67,10 @@ How to score honestly:
      - Research / surveys / studies
      - Capacity building / training
      - Policy / stakeholder engagement
-   - The CORE DELIVERABLE must be one of the items above. Generic mention of "training" or "study" inside an unrelated tender does not count.
+     - TOR-driven consulting assignments, technical assistance (TA), MEL (monitoring, evaluation, learning), strategy formulation
+   - The CORE DELIVERABLE must be one of the items above (or a substantive advisory component in a mixed notice — see Advisory vs supply). Generic mention of "training" or "study" inside an unrelated tender does not count.
    - "Capacity building / training" and "Research / surveys / studies" must be on a topic relevant to the sectors in criterion 2 (energy, agriculture, finance, SMEs, climate). Training in graphic design, photography, communications, generic IT use, language, or driving is NO.
-   - NO for: pure goods supply/delivery/installation, construction/civil works, graphic design, videography, photography, film/media production, recruitment/HR placement, audit/accounting, legal drafting, translation, printing, vehicle supply, security guards, cleaning.
+   - NO for: pure goods supply/delivery/installation with no substantive advisory line items, construction/civil works, graphic design, videography, photography, film/media production, recruitment/HR placement, audit/accounting, legal drafting, translation, printing, vehicle supply, security guards, cleaning.
    (JSON key: activity_fit)
 
 4. Geographic Fit
@@ -92,6 +99,13 @@ Opportunity characteristics — use these exact tokens in opportunity_characteri
 - consortium_likely_required (consortium likely required)
 
 Strategic signals — use these exact tokens in strategic_signals[]:
+
+Required — include exactly ONE engagement tag (advisory vs supply classification):
+- engagement_advisory_only (advisory/consulting is the core; goods mentions minor or absent)
+- engagement_supply_only (supply/goods is the core; no substantive TOR/TA/study/BDS/MEL/strategy/training/policy advisory deliverables)
+- engagement_advisory_and_supply_mixed (both a substantive advisory/consulting component and a supply/goods component are clearly in scope)
+
+Optional — include zero or more:
 - new_donor_for_precise (new donor for Precise)
 - repeat_known_donor (repeat / known donor)
 - government_led (government-led)
