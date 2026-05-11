@@ -5,6 +5,14 @@ Main entry point for the Tender Monitoring System FastAPI backend
 
 import os
 import sys
+from pathlib import Path
+
+# Project root on path before any `app.*` imports
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from app.core.asyncio_windows import apply as _apply_windows_asyncio_policy
+
+_apply_windows_asyncio_policy()
 
 # Fix Windows console encoding for Unicode support
 if os.name == 'nt':  # Windows
@@ -21,16 +29,9 @@ if os.name == 'nt':  # Windows
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
 # Then your existing imports and code...
-from app.core.logging import setup_logging
-
 import uvicorn
 import asyncio
 import logging
-from pathlib import Path
-
-# Add the project root to Python path
-import sys
-sys.path.append(str(Path(__file__).parent))
 
 from app.core.config import settings
 from app.core.logging import setup_logging

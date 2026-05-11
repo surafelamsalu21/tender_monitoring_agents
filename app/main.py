@@ -4,6 +4,10 @@ Entry point for the Tender Monitoring System API
 """
 from datetime import datetime, timezone
 import asyncio
+
+from app.core.asyncio_windows import apply as _apply_windows_asyncio_policy
+
+_apply_windows_asyncio_policy()
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query

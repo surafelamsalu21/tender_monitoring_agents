@@ -17,6 +17,10 @@ from pathlib import Path
 # project root on path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.core.asyncio_windows import apply as _apply_windows_asyncio_policy
+
+_apply_windows_asyncio_policy()
+
 from app.core.database import SessionLocal, create_tables
 from app.crawl.playwright_harvest import harvest_with_playwright
 from app.repositories.page_repository import PageRepository
