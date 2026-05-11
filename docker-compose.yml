@@ -1,0 +1,24 @@
+# Run the API in Linux so Playwright/crawl4ai behave the same on Windows, Mac, and CI.
+#
+# Usage (from repo root):
+#   docker compose build
+#   docker compose up
+#
+# Copy .env.example to .env and fill keys first. SQLite is stored in the named volume
+# `tender_sqlite` (not the host file next to the repo) unless you override DATABASE_URL.
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Named volume path inside the container (persists across rebuilds)
+      DATABASE_URL: sqlite:////app/data/tender_monitoring.db
+    volumes:
+      - tender_sqlite:/app/data
+
+volumes:
+  tender_sqlite:

@@ -98,6 +98,17 @@ graph TD
     # Add any other necessary environment variables from app/core/config.py
     ```
 
+### Docker (optional, recommended when Playwright fails on Windows)
+
+The API runs in **Linux** inside the container, so **Playwright and asyncio behave like on macOS/Linux** (no Windows `SelectorEventLoop` / driver issues). Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) on Windows or Mac.
+
+```bash
+docker compose build
+docker compose up
+```
+
+API: `http://localhost:8000`. Compose sets `DATABASE_URL` to a **named volume** (`/app/data/…`) so data survives image rebuilds; it is separate from a native `sqlite:///./tender_monitoring.db` on the host. Use either Docker or native Python for one environment, or point `DATABASE_URL` at PostgreSQL for shared dev.
+
 ## Usage
 
 1.  **Run the Backend Server**:
