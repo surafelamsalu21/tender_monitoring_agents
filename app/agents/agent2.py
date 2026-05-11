@@ -343,47 +343,62 @@ class TenderDetailAgent:
             logger.error("Playwright detail fallback unavailable: %s", exc)
             return None
 
-        logger.info("Agent 2: Playwright detail fallback for %s", tender_url)
-        try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                try:
-                    page = await browser.new_page()
-                    page.set_default_timeout(60_000)
-                    await page.goto(tender_url, wait_until="load")
-                    await page.wait_for_timeout(750)
-                    text = (await page.locator("body").inner_text()).strip()
-                    links = await page.evaluate(
-                        """() => Array.from(document.querySelectorAll('a[href]'))
-                            .map((a) => {
-                                const text = (a.innerText || a.textContent || '').replace(/\\s+/g, ' ').trim();
-                                return { text, href: a.href };
-                            })
-                            .filter((item) => item.text && item.href)"""
-                    )
-                finally:
-                    await browser.close()
+        async def _pw_detail() -> Optional[str]:
+            logger.info("Agent 2: Playwright detail fallback for %s", tender_url)
+            try:
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True)
+                    try:
+                        page = await browser.new_page()
+                        page.set_default_timeout(60_000)
+                        await page.goto(tender_url, wait_until="load")
+                        await page.wait_for_timeout(750)
+                        text = (await page.locator("body").inner_text()).strip()
+                        links = await page.evaluate(
+                            """() => Array.from(document.querySelectorAll('a[href]'))
+                                .map((a) => {
+                                    const text = (a.innerText || a.textContent || '').replace(/\\s+/g, ' ').trim();
+                                    return { text, href: a.href };
+                                })
+                                .filter((item) => item.text && item.href)"""
+                        )
+                    finally:
+                        await browser.close()
 
-            link_lines = []
-            for link in links:
-                label = str(link.get("text") or "").strip()
-                href = str(link.get("href") or "").strip()
-                if label and href.startswith("http"):
-                    link_lines.append(f"- {label}: {href}")
-            if link_lines:
-                text = f"{text}\n\nLinks:\n" + "\n".join(link_lines[:80])
-            if len(text) < 100:
-                logger.error("Playwright fallback returned minimal text for %s", tender_url)
+                link_lines = []
+                for link in links:
+                    label = str(link.get("text") or "").strip()
+                    href = str(link.get("href") or "").strip()
+                    if label and href.startswith("http"):
+                        link_lines.append(f"- {label}: {href}")
+                if link_lines:
+                    text = f"{text}\n\nLinks:\n" + "\n".join(link_lines[:80])
+                if len(text) < 100:
+                    logger.error("Playwright fallback returned minimal text for %s", tender_url)
+                    return None
+                logger.info(
+                    "Agent 2: Playwright fallback scraped %s characters from %s",
+                    len(text),
+                    tender_url,
+                )
+                return text
+            except Exception as exc:
+                logger.error("Playwright detail fallback failed for %s: %s", tender_url, exc)
                 return None
-            logger.info(
-                "Agent 2: Playwright fallback scraped %s characters from %s",
-                len(text),
-                tender_url,
-            )
-            return text
-        except Exception as exc:
-            logger.error("Playwright detail fallback failed for %s: %s", tender_url, exc)
-            return None
+
+        from app.core.playwright_windows_async import (
+            needs_windows_playwright_thread,
+            run_coro_on_windows_playwright_loop,
+        )
+
+        if needs_windows_playwright_thread():
+
+            def _run_sync() -> Optional[str]:
+                return run_coro_on_windows_playwright_loop(_pw_detail())
+
+            return await asyncio.to_thread(_run_sync)
+
+        return await _pw_detail()
     
     @staticmethod
     def _nonempty_str(val: Any) -> str:

@@ -10,6 +10,7 @@ Run once:  playwright install chromium
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -473,41 +474,14 @@ def _resolve_auth_selectors(monitored: MonitoredPage) -> dict[str, str]:
     return data
 
 
-async def harvest_with_playwright(monitored: MonitoredPage) -> HarvestResult:
-    """
-    Log in (if auth_login_url + env credentials resolve), then navigate to monitored.url
-    and return page HTML as plain text + link hrefs for Agent1.
-    """
+async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestResult:
+    """Browser work only (Playwright async). See `harvest_with_playwright` for entry."""
     listing_url = monitored.url
     login_url = getattr(monitored, "auth_login_url", None) or settings.PLAYWRIGHT_AUTH_LOGIN_URL
     user_env = getattr(monitored, "auth_username_env", None) or settings.PLAYWRIGHT_AUTH_USERNAME_ENV
     pass_env = getattr(monitored, "auth_password_env", None) or settings.PLAYWRIGHT_AUTH_PASSWORD_ENV
 
-    if login_url:
-        username = os.environ.get(user_env or "") if user_env else ""
-        password = os.environ.get(pass_env or "") if pass_env else ""
-        if not username.strip() or not password.strip():
-            return HarvestResult(
-                status="failed",
-                page_url=listing_url,
-                error=(
-                    f"Missing credentials: set {user_env} and {pass_env} in the environment (.env)"
-                ),
-                session_meta={
-                    "strategy": "playwright",
-                    "login_url_set": True,
-                },
-            )
-
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError as e:
-        return HarvestResult(
-            status="failed",
-            page_url=listing_url,
-            error=f"Playwright not installed: {e}",
-            session_meta={"strategy": "playwright"},
-        )
+    from playwright.async_api import async_playwright
 
     selectors = _resolve_auth_selectors(monitored)
     wait_until = settings.PLAYWRIGHT_GOTO_WAIT or "load"
@@ -605,3 +579,60 @@ async def harvest_with_playwright(monitored: MonitoredPage) -> HarvestResult:
             "max_pages": max(1, min(int(getattr(settings, "PLAYWRIGHT_MAX_PAGES", 4) or 4), 4)),
         },
     )
+
+
+async def harvest_with_playwright(monitored: MonitoredPage) -> HarvestResult:
+    """
+    Log in (if auth_login_url + env credentials resolve), then navigate to monitored.url
+    and return page HTML as plain text + link hrefs for Agent1.
+    """
+    from app.core.playwright_windows_async import (
+        needs_windows_playwright_thread,
+        run_coro_on_windows_playwright_loop,
+    )
+
+    listing_url = monitored.url
+    login_url = getattr(monitored, "auth_login_url", None) or settings.PLAYWRIGHT_AUTH_LOGIN_URL
+    user_env = getattr(monitored, "auth_username_env", None) or settings.PLAYWRIGHT_AUTH_USERNAME_ENV
+    pass_env = getattr(monitored, "auth_password_env", None) or settings.PLAYWRIGHT_AUTH_PASSWORD_ENV
+
+    if login_url:
+        username = os.environ.get(user_env or "") if user_env else ""
+        password = os.environ.get(pass_env or "") if pass_env else ""
+        if not username.strip() or not password.strip():
+            return HarvestResult(
+                status="failed",
+                page_url=listing_url,
+                error=(
+                    f"Missing credentials: set {user_env} and {pass_env} in the environment (.env)"
+                ),
+                session_meta={
+                    "strategy": "playwright",
+                    "login_url_set": True,
+                },
+            )
+
+    try:
+        from playwright.async_api import async_playwright  # noqa: F401
+    except ImportError as e:
+        return HarvestResult(
+            status="failed",
+            page_url=listing_url,
+            error=f"Playwright not installed: {e}",
+            session_meta={"strategy": "playwright"},
+        )
+
+    if needs_windows_playwright_thread():
+        logger.info(
+            "Playwright on Windows: server loop is not Proactor (typical with uvicorn --reload); "
+            "running harvest on a worker thread with its own Proactor loop."
+        )
+
+        def _run_sync() -> HarvestResult:
+            return run_coro_on_windows_playwright_loop(
+                _harvest_with_playwright_async(monitored)
+            )
+
+        return await asyncio.to_thread(_run_sync)
+
+    return await _harvest_with_playwright_async(monitored)
