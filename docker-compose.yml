@@ -17,6 +17,15 @@ services:
     environment:
       # Named volume path inside the container (persists across rebuilds)
       DATABASE_URL: sqlite:////app/data/tender_monitoring.db
+      # .env often has OLLAMA_BASE_URL=http://localhost:11434 — inside the container
+      # "localhost" is the container itself, so Ollama on the host is unreachable.
+      # This override reaches the machine running Docker (Ollama: `ollama serve` on host).
+      # For Ollama on another host, set OLLAMA_BASE_URL in .env and remove this line
+      # or replace with your URL via a compose profile / separate override file.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      # Linux Docker Engine: makes host.docker.internal resolve to the host gateway
+      - "host.docker.internal:host-gateway"
     volumes:
       - tender_sqlite:/app/data
 
