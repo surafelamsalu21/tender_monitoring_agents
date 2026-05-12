@@ -2,8 +2,9 @@
 import axios from 'axios';
 import { Tender, Page, Keyword, SystemStatus } from '../types';
 
-// Base URL for API endpoints (set REACT_APP_API_URL when the UI is opened from other devices, e.g. http://192.168.1.10:8000)
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+// API base: empty = same origin (CRA dev server proxies /api to backend — works from other PCs on LAN).
+// Set REACT_APP_API_URL when the built UI is hosted separately from the API (e.g. http://192.168.1.10:8000).
+const API_BASE_URL = (process.env.REACT_APP_API_URL || '').replace(/\/$/, '');
 
 const api = axios.create({
   baseURL: API_BASE_URL,
