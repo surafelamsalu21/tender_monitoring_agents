@@ -64,7 +64,9 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
+    # False so `allow_origins=["*"]` works in browsers (credentials + * is invalid per CORS).
+    # Auth uses Bearer tokens in headers, not cookies.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

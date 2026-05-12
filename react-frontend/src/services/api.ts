@@ -2,8 +2,8 @@
 import axios from 'axios';
 import { Tender, Page, Keyword, SystemStatus } from '../types';
 
-// Base URL for API endpoints
-const API_BASE_URL = 'http://localhost:8000';
+// Base URL for API endpoints (set REACT_APP_API_URL when the UI is opened from other devices, e.g. http://192.168.1.10:8000)
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
