@@ -28,6 +28,10 @@ interface EmailNotificationSettings {
 }
 
 export const Settings: React.FC = () => {
+  const backendUrlDisplay =
+    process.env.REACT_APP_API_URL ||
+    `${window.location.protocol}//${window.location.hostname}:8000`;
+
   const [systemStatus, setSystemStatus] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -653,7 +657,7 @@ export const Settings: React.FC = () => {
                 </label>
                 <input
                   type="url"
-                  value="http://localhost:8000"
+                  value={backendUrlDisplay}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50"
                   disabled
                 />
@@ -701,7 +705,7 @@ export const Settings: React.FC = () => {
               </label>
               <input
                 type="url"
-                value="http://localhost:8000"
+                value={backendUrlDisplay}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50"
                 disabled
               />
