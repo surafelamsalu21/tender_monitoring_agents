@@ -23,6 +23,8 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+SCHEDULED_BACKUP_INTERVAL_HOURS = 24
+
 
 @dataclass
 class BackupFile:
@@ -238,7 +240,7 @@ def get_backup_status() -> dict:
     backup_dir = get_backup_dir()
     return {
         "enabled": bool(getattr(settings, "BACKUP_ENABLED", True)),
-        "interval_hours": int(getattr(settings, "BACKUP_INTERVAL_HOURS", 24) or 24),
+        "interval_hours": SCHEDULED_BACKUP_INTERVAL_HOURS,
         "retention": int(getattr(settings, "BACKUP_RETENTION", 30) or 30),
         "directory": str(backup_dir),
         "count": len(items),

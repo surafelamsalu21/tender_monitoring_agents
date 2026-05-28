@@ -12,10 +12,11 @@ from app.core.llm_factory import get_chat_llm
 
 logger = logging.getLogger(__name__)
 
+
 class EmailComposerAgent:
     """
     Agent 3: Compose rich, detailed emails with beautiful formatting
-    
+
     Role:
     - Take detailed tender information from Agent 2
     - Create comprehensive, well-formatted emails
@@ -31,9 +32,9 @@ class EmailComposerAgent:
         if team_category == "screening_opportunities":
             return "Opportunities Team"
         return "Opportunity Review Team"
-    
-    async def compose_tender_email(self, tender_data: Dict[str, Any], 
-                                   detailed_info: Dict[str, Any], 
+
+    async def compose_tender_email(self, tender_data: Dict[str, Any],
+                                   detailed_info: Dict[str, Any],
                                    team_category: str) -> Dict[str, Any]:
         """
         Compose rich, detailed email content for a tender notification.
@@ -90,7 +91,7 @@ Return ONLY the JSON object with no additional text.
                 email_content['team_category'] = team_category
                 email_content['tender_id'] = tender_data.get('id')
                 email_content['agent_version'] = '3.0-enhanced'
-                
+
                 logger.info(
                     f"Agent 3: Successfully composed detailed email for {team_category} team"
                 )
@@ -206,7 +207,7 @@ HTML STRUCTURE REQUIREMENTS:
   - On small screens only, allow vertical stacking using a media query
 
 Use modern HTML/CSS practices and ensure the email looks professional in all email clients."""
-    
+
     def _format_all_details(self, detailed_info: Dict[str, Any]) -> str:
         """
         Formats all detailed tender info as a readable multiline string for prompt context.
@@ -234,14 +235,15 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
             'procurement_method': 'Procurement Method',
             'categories': 'Categories'
         }
-        
+
         for key, label in detail_mapping.items():
             if key in detailed_info and detailed_info[key]:
                 value = detailed_info[key]
                 if isinstance(value, dict):
                     formatted_details.append(f"{label}: {value}")
                 elif isinstance(value, list):
-                    formatted_details.append(f"{label}: {', '.join([str(v) for v in value])}")
+                    formatted_details.append(
+                        f"{label}: {', '.join([str(v) for v in value])}")
                 else:
                     formatted_details.append(f"{label}: {str(value)}")
         return "\n".join(formatted_details)
@@ -261,7 +263,8 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
             # Remove any '```json' or '```' delimiters that may be present
             cleaned_text = response_text
             if response_text.startswith('```json'):
-                cleaned_text = response_text.replace('```json', '').replace('```', '').strip()
+                cleaned_text = response_text.replace(
+                    '```json', '').replace('```', '').strip()
             elif response_text.startswith('```'):
                 cleaned_text = response_text.replace('```', '').strip()
             email_content = json.loads(cleaned_text)
@@ -280,8 +283,8 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
             logger.error(f"Unexpected error parsing email response: {e}")
             return None
 
-    def _create_detailed_fallback_email(self, tender_data: Dict[str, Any], 
-                                        detailed_info: Dict[str, Any], 
+    def _create_detailed_fallback_email(self, tender_data: Dict[str, Any],
+                                        detailed_info: Dict[str, Any],
                                         team_category: str) -> Dict[str, Any]:
         """
         Fallback: Build a rich email structure yourself (without LLM) if LLM fails
@@ -365,8 +368,8 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
         except Exception:
             return "NORMAL"
 
-    def _create_rich_html_template(self, title: str, team_name: str, team_category: str, 
-                                   tender_data: Dict[str, Any], detailed_info: Dict[str, Any], 
+    def _create_rich_html_template(self, title: str, team_name: str, team_category: str,
+                                   tender_data: Dict[str, Any], detailed_info: Dict[str, Any],
                                    contact_info: Dict[str, Any], urgency: str) -> str:
         """
         Assembles a visually rich HTML email string using all available information.
@@ -382,7 +385,8 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
         deadline = detailed_info.get('deadline', 'Not specified')
         requirements = detailed_info.get('requirements', 'See tender details')
         tender_value = detailed_info.get('tender_value', 'Not specified')
-        description = detailed_info.get('detailed_description', tender_data.get('description', ''))
+        description = detailed_info.get(
+            'detailed_description', tender_data.get('description', ''))
 
         # Format requirements (try bulleted list if possible)
         if isinstance(requirements, str) and '\n' in requirements:
@@ -649,7 +653,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
         </html>
         """
 
-    async def compose_multiple_tenders_email(self, tenders_with_details: List[Dict[str, Any]], 
+    async def compose_multiple_tenders_email(self, tenders_with_details: List[Dict[str, Any]],
                                              team_category: str) -> Dict[str, Any]:
         """
         Compose a single digest email containing several tenders.
@@ -662,11 +666,13 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
             Dictionary with composed email fields (subject, priority, summary, html_body, ...)
         """
         try:
-            logger.info(f"Agent 3: Composing multi-tender email for {team_category} team with {len(tenders_with_details)} tenders")
-            
+            logger.info(
+                f"Agent 3: Composing multi-tender email for {team_category} team with {len(tenders_with_details)} tenders")
+
             team_name = self._get_team_name(team_category)
             subject = f"New {team_category.upper()} Tenders - {len(tenders_with_details)} Opportunities Found"
-            html_body = self._create_multi_tender_html(tenders_with_details, team_name, team_category)
+            html_body = self._create_multi_tender_html(
+                tenders_with_details, team_name, team_category)
             return {
                 'subject': subject,
                 'priority': self._assess_multi_tender_priority(tenders_with_details),
@@ -703,8 +709,8 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
         else:
             return "Medium"
 
-    def _create_multi_tender_html(self, tenders: List[Dict[str, Any]], 
-                                 team_name: str, team_category: str) -> str:
+    def _create_multi_tender_html(self, tenders: List[Dict[str, Any]],
+                                  team_name: str, team_category: str) -> str:
         """
         Produces a visually rich HTML digest with a card for each tender and summary statistics.
 
@@ -734,7 +740,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
                     contact_info = {'organization': contact_info}
             urgency_colors = {
                 "URGENT": "#dc3545",
-                "HIGH": "#fd7e14", 
+                "HIGH": "#fd7e14",
                 "MEDIUM": "#ffc107",
                 "NORMAL": "#28a745"
             }
@@ -772,7 +778,8 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
         # Display summary of urgent tenders if present
         urgent_summary = ""
         if urgent_tenders:
-            urgent_list = "".join([f"<li>#{num}: {title} (Due: {deadline})</li>" for num, title, deadline in urgent_tenders])
+            urgent_list = "".join(
+                [f"<li>#{num}: {title} (Due: {deadline})</li>" for num, title, deadline in urgent_tenders])
             urgent_summary = f"""
             <div class="urgent-summary">
                 <h3>⚠️ Urgent Deadlines Requiring Immediate Attention</h3>
@@ -1047,7 +1054,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
         </html>
         """
 
-    def _create_simple_multi_tender_fallback(self, tenders: List[Dict[str, Any]], 
+    def _create_simple_multi_tender_fallback(self, tenders: List[Dict[str, Any]],
                                              team_category: str) -> Dict[str, Any]:
         """
         If rich digest formatting fails, compose a dead-simple HTML email as fallback.
@@ -1077,7 +1084,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
             'agent_version': '3.0-fallback-multi'
         }
 
-    async def compose_multiple_emails(self, tenders_with_details: List[Dict[str, Any]], 
+    async def compose_multiple_emails(self, tenders_with_details: List[Dict[str, Any]],
                                       team_category: str) -> List[Dict[str, Any]]:
         """
         Compose emails for multiple tenders -- determines if digest or individual emails
@@ -1090,10 +1097,12 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
             List of dicts: each represents an email to be sent, with metadata etc.
         """
         email_compositions = []
-        logger.info(f"Agent 3: Composing emails for {len(tenders_with_details)} tenders for {team_category} team")
+        logger.info(
+            f"Agent 3: Composing emails for {len(tenders_with_details)} tenders for {team_category} team")
         # If more than one, send digest, else send individual
         if len(tenders_with_details) > 1:
-            logger.info(f"Agent 3: Creating digest email for {len(tenders_with_details)} tenders")
+            logger.info(
+                f"Agent 3: Creating digest email for {len(tenders_with_details)} tenders")
             digest_email = await self.compose_multiple_tenders_email(tenders_with_details, team_category)
             if digest_email:
                 digest_ids = []
@@ -1128,9 +1137,11 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
                             'email_type': 'individual'
                         })
                 except Exception as e:
-                    logger.error(f"Agent 3: Error composing individual email: {e}")
+                    logger.error(
+                        f"Agent 3: Error composing individual email: {e}")
                     continue
-        logger.info(f"Agent 3: Completed enhanced email composition - {len(email_compositions)} emails created")
+        logger.info(
+            f"Agent 3: Completed enhanced email composition - {len(email_compositions)} emails created")
         return email_compositions
 
 # =============================================================
@@ -1141,13 +1152,13 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
 # OVERVIEW:
 #  - This file defines the EmailComposerAgent class, responsible for assembling
 #    rich, well-formatted tender notification emails for a team.
-#  - The agent takes structured tender data (from previous agents in the pipeline) 
+#  - The agent takes structured tender data (from previous agents in the pipeline)
 #    and produces fully detailed notification emails, including modern HTML+CSS design.
 #  - The agent supports both (1) individual tender emails, and (2) digest emails covering multiple tenders.
 #  - For HTML and text generation, the agent uses a language model (LLM), but has robust local fallbacks.
 #
 # DESIGN:
-#  - The primary interface is EmailComposerAgent, which exposes async methods for composing single 
+#  - The primary interface is EmailComposerAgent, which exposes async methods for composing single
 #    and multiple tender emails.
 #    - compose_tender_email: for a single tender (uses LLM if possible, falls back if not)
 #    - compose_multiple_tenders_email: creates a digest email listing several tenders
@@ -1159,7 +1170,7 @@ Use modern HTML/CSS practices and ensure the email looks professional in all ema
 #      - color coding, urgency badges, and call-to-action buttons for professionalism and scanability.
 #
 # KEY COMPONENTS:
-#  - _build_detailed_email_prompt: Creates a precise system+user prompt for the LLM, instructing it about 
+#  - _build_detailed_email_prompt: Creates a precise system+user prompt for the LLM, instructing it about
 #      structure, styling, content, urgency, tone, etc.
 #  - _format_all_details: Consolidates all detailed info into a prompt-friendly string.
 #  - _parse_email_response: Attempts to safely extract the expected data fields from often-messy LLM results.

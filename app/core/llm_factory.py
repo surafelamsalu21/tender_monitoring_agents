@@ -1,5 +1,5 @@
 """
-LLM factory for selecting OpenAI or Ollama providers.
+LLM factory for selecting OpenAI, Anthropic, Gemini, Groq, or Ollama providers.
 """
 from typing import Any, Optional
 
@@ -15,7 +15,33 @@ def get_chat_llm(temperature: float = 0.1, *, ollama_format: Optional[str] = Non
     ``ollama_format``: when set, overrides ``OLLAMA_FORMAT`` for this instance only.
     Use ``\"none\"`` to omit ``format=`` (often better for tiny models on free-text JSON).
     """
-    provider = (settings.LLM_PROVIDER or "openai").lower().strip()
+    provider = (settings.LLM_PROVIDER or "anthropic").lower().strip()
+    if provider == "claude":
+        provider = "anthropic"
+
+    if provider == "anthropic":
+        if not settings.ANTHROPIC_API_KEY:
+            raise ValueError(
+                "ANTHROPIC_API_KEY (or CLAUDE_API_KEY) is required when "
+                "LLM_PROVIDER=anthropic."
+            )
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(
+            model=settings.ANTHROPIC_MODEL,
+            api_key=settings.ANTHROPIC_API_KEY,
+            temperature=temperature,
+        )
+
+    if provider == "openai":
+        if not settings.OPENAI_API_KEY:
+            raise ValueError(
+                "OPENAI_API_KEY is required when LLM_PROVIDER=openai."
+            )
+        return ChatOpenAI(
+            model=settings.OPENAI_MODEL,
+            api_key=settings.OPENAI_API_KEY,
+            temperature=temperature,
+        )
 
     if provider == "ollama":
         kwargs: dict[str, Any] = {
@@ -32,17 +58,33 @@ def get_chat_llm(temperature: float = 0.1, *, ollama_format: Optional[str] = Non
             kwargs["async_client_kwargs"] = {"timeout": float(http_timeout)}
         return ChatOllama(**kwargs)
 
-    if provider == "openai":
-        if not settings.OPENAI_API_KEY:
+    if provider == "gemini":
+        if not settings.GEMINI_API_KEY:
             raise ValueError(
-                "OPENAI_API_KEY is required when LLM_PROVIDER=openai."
+                "GEMINI_API_KEY is required when LLM_PROVIDER=gemini. "
+                "Get a free key at https://aistudio.google.com"
             )
-        return ChatOpenAI(
-            model=settings.OPENAI_MODEL,
-            api_key=settings.OPENAI_API_KEY,
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model=settings.GEMINI_MODEL,
+            google_api_key=settings.GEMINI_API_KEY,
+            temperature=temperature,
+        )
+
+    if provider == "groq":
+        if not settings.GROQ_API_KEY:
+            raise ValueError(
+                "GROQ_API_KEY is required when LLM_PROVIDER=groq. "
+                "Get a free key at https://console.groq.com"
+            )
+        from langchain_groq import ChatGroq
+        return ChatGroq(
+            model=settings.GROQ_MODEL,
+            api_key=settings.GROQ_API_KEY,
             temperature=temperature,
         )
 
     raise ValueError(
-        f"Unsupported LLM_PROVIDER '{settings.LLM_PROVIDER}'. Use 'openai' or 'ollama'."
+        f"Unsupported LLM_PROVIDER '{settings.LLM_PROVIDER}'. "
+        "Use 'anthropic', 'openai', 'gemini', 'groq', or 'ollama'."
     )

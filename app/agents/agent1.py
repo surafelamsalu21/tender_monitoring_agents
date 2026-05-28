@@ -522,7 +522,12 @@ Extract opportunities as a JSON array only."""
                     f" [LLM unreachable: OLLAMA_BASE_URL={settings.OLLAMA_BASE_URL!r} — "
                     f"ensure Ollama is running (`ollama serve`)]"
                 )
-            elif prov == "openai":
-                hint = " [LLM unreachable — check OPENAI_API_KEY]"
+            elif prov in ("openai", "anthropic", "claude"):
+                key_hint = (
+                    "ANTHROPIC_API_KEY"
+                    if prov in ("anthropic", "claude")
+                    else "OPENAI_API_KEY"
+                )
+                hint = f" [LLM unreachable — check {key_hint}]"
 
         logger.error("Agent 1 extraction failed: %s%s", exc, hint)

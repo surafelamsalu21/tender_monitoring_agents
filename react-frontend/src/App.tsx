@@ -22,7 +22,7 @@ import {
   AccountPage,
 } from './components';
 import { TabType } from './types';
-import { apiService, AuthUser, clearAuthToken, getAuthToken } from './services/api';
+import { apiService, AuthUser, clearAuthToken, getAuthToken, setUnauthorizedHandler } from './services/api';
 
 const AuthenticatedApp: React.FC<{
   user: AuthUser;
@@ -74,6 +74,7 @@ const AuthenticatedApp: React.FC<{
             stats={stats}
             systemStatus={systemStatus}
             tenders={tenders}
+            currentUser={user}
             onTriggerExtraction={triggerExtraction}
             isExtracting={isExtracting}
             extractionPhase={extractionPhase}
@@ -108,6 +109,7 @@ const AuthenticatedApp: React.FC<{
             stats={stats}
             systemStatus={systemStatus}
             tenders={tenders}
+            currentUser={user}
             onTriggerExtraction={triggerExtraction}
             isExtracting={isExtracting}
             extractionPhase={extractionPhase}
@@ -124,19 +126,16 @@ const AuthenticatedApp: React.FC<{
       <header className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-6">
           {/* Top bar with title */}
-          <div className="flex items-center justify-between py-3 min-h-16 border-b border-gray-100">
+          <div className="flex items-center justify-between py-4 min-h-20 border-b border-gray-100">
             <div className="flex items-center">
               <div>
-                <h1 className="text-2xl font-bold text-gray-900 leading-tight">Precise</h1>
-                <p className="text-sm text-brand-muted">Tender monitoring</p>
+                <h1 className="text-2xl font-extrabold text-red-600 leading-none tracking-tight uppercase">
+                  Precise
+                </h1>
+                <p className="mt-1 text-[10px] font-medium uppercase tracking-[0.26em] text-gray-500">
+                  Growth Accelerated
+                </p>
               </div>
-              {/* Show processing indicator */}
-              {tenders.length > 0 && (
-                <div className="ml-6 flex items-center text-sm text-gray-500">
-                  <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></div>
-                  AI Agents Active
-                </div>
-              )}
             </div>
 
             <div className="flex items-center gap-3">
@@ -146,7 +145,7 @@ const AuthenticatedApp: React.FC<{
               </div>
               <button
                 onClick={onLogout}
-                className="inline-flex items-center px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
+                className="inline-flex items-center px-3 py-2 text-sm border border-gray-300 rounded-lg hover:border-red-200 hover:bg-red-50 hover:text-red-700 transition-colors"
               >
                 <LogOut className="h-4 w-4 mr-2" />
                 Logout
@@ -169,7 +168,7 @@ const AuthenticatedApp: React.FC<{
           </div>
           
           {/* Navigation Tabs */}
-          <nav className="flex space-x-8 py-4">
+          <nav className="flex gap-4 overflow-x-auto py-4">
             {navigation.map((item) => {
               const Icon = item.icon;
               const showBadge = item.id === 'tenders' && tenders.filter(t => t.is_processed).length > 0;
@@ -178,10 +177,10 @@ const AuthenticatedApp: React.FC<{
                 <button
                   key={item.id}
                   onClick={() => setActiveTab(item.id as TabType)}
-                  className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors relative ${
+                  className={`relative flex items-center whitespace-nowrap rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
                     activeTab === item.id
-                      ? 'bg-primary-100 text-primary-700 border-2 border-primary-200'
-                      : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 border-2 border-transparent'
+                      ? 'bg-red-50 text-red-700 border-red-200 shadow-sm'
+                      : 'border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                   }`}
                 >
                   <Icon className="h-5 w-5 mr-2" />
@@ -220,6 +219,11 @@ function App() {
   const [sessionLoading, setSessionLoading] = useState(true);
 
   useEffect(() => {
+    // Register a global handler so expired-token 401s auto-logout from anywhere in the app
+    setUnauthorizedHandler(() => {
+      setCurrentUser(null);
+    });
+
     const bootstrapSession = async () => {
       const token = getAuthToken();
       if (!token) {

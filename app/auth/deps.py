@@ -50,3 +50,19 @@ def require_super_admin(current_user: User = Depends(get_current_user)) -> User:
             detail="Super admin access required",
         )
     return current_user
+
+
+_ANALYST_OR_ABOVE = {"analyst", "admin", "super_admin"}
+
+
+def require_analyst_or_above(current_user: User = Depends(get_current_user)) -> User:
+    """Allow analyst, admin, and super_admin. Block viewer."""
+    if current_user.role not in _ANALYST_OR_ABOVE and not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Analyst access or higher is required to perform this action",
+        )
+    return current_user
+
+
+# ekKsh5@V.G@4jJN

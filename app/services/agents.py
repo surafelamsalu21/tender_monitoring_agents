@@ -6,13 +6,13 @@ import json
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, TypedDict
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 import asyncio
 
 from app.agents.screening_prompt import PRECISE_SCREENING_CHECKLIST_MARKDOWN
 from app.core.config import settings
+from app.core.llm_factory import get_chat_llm
 from app.services.scraper import TenderScraper
 
 logger = logging.getLogger(__name__)
@@ -31,11 +31,7 @@ class TenderAgent:
     """Multi-agent system for tender extraction and processing"""
     
     def __init__(self):
-        self.llm = ChatOpenAI(
-            model=settings.OPENAI_MODEL,
-            api_key=settings.OPENAI_API_KEY,
-            temperature=0.1
-        )
+        self.llm = get_chat_llm(temperature=0.1)
         self.workflow = self.create_workflow()
     
     def create_workflow(self) -> StateGraph:

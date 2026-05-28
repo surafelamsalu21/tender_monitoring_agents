@@ -22,7 +22,13 @@ from app.crawl.orchestrator import harvest_for_page
 from app.utils.listing_prep import dual_markdown_for_agent1_and_expiry
 from app.pipeline.crawl_artifact import crawl_artifact_from_harvest
 from app.pipeline.progress import pipeline_tty
-from app.services.db_backup import run_scheduled_backup
+from app.services.db_backup import SCHEDULED_BACKUP_INTERVAL_HOURS, run_scheduled_backup
+from app.services.crawl_schedule import (
+    next_scheduled_crawl_utc,
+    schedule_description,
+    seconds_until_next_crawl,
+    uses_weekday_schedule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +64,27 @@ class TenderScheduler:
         
         self.running = True
         logger.info("Starting extended tender monitoring pipeline with Agent 3...")
-        logger.info(f"Scheduler will run every {settings.CRAWL_INTERVAL_HOURS} hours")
+        if uses_weekday_schedule():
+            logger.info("Scheduler will run on %s", schedule_description())
+        else:
+            interval_hours = settings.CRAWL_INTERVAL_HOURS
+            interval_label = (
+                f"{interval_hours // 24} day(s)"
+                if interval_hours % 24 == 0 and interval_hours >= 24
+                else f"{interval_hours} hour(s)"
+            )
+            logger.info("Scheduler will run every %s", interval_label)
         logger.info("Extended Pipeline: Main Page -> Agent1 -> DB1 -> Agent2 -> DB2 -> Agent3 -> Enhanced Email")
+
+        if uses_weekday_schedule():
+            from datetime import datetime, timezone
+            self.next_extraction_at = next_scheduled_crawl_utc().isoformat()
+        else:
+            from datetime import datetime, timedelta, timezone
+            interval_seconds = settings.CRAWL_INTERVAL_HOURS * 3600
+            self.next_extraction_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)
+            ).isoformat()
 
         # Start periodic task
         self.task = asyncio.create_task(self._periodic_task())
@@ -69,7 +94,7 @@ class TenderScheduler:
             self.backup_task = asyncio.create_task(self._periodic_backup())
             logger.info(
                 "Database backup scheduler started (every %sh, retention=%s)",
-                getattr(settings, "BACKUP_INTERVAL_HOURS", 24),
+                SCHEDULED_BACKUP_INTERVAL_HOURS,
                 getattr(settings, "BACKUP_RETENTION", 30),
             )
     
@@ -91,12 +116,11 @@ class TenderScheduler:
         logger.info("Scheduler stopped")
 
     async def _periodic_backup(self):
-        """Independent loop that takes a SQLite online backup every N hours."""
+        """Independent loop that takes a SQLite online backup every 24 hours."""
         from datetime import datetime, timezone
 
         initial_delay = max(0, int(getattr(settings, "BACKUP_INITIAL_DELAY_SECONDS", 300) or 0))
-        interval_hours = max(1, int(getattr(settings, "BACKUP_INTERVAL_HOURS", 24) or 24))
-        interval_seconds = interval_hours * 3600
+        interval_seconds = SCHEDULED_BACKUP_INTERVAL_HOURS * 3600
 
         try:
             await asyncio.sleep(initial_delay)
@@ -122,23 +146,30 @@ class TenderScheduler:
                 break
     
     async def _periodic_task(self):
-        """Internal periodic task runner — runs every CRAWL_INTERVAL_HOURS."""
-        from datetime import datetime, timedelta, timezone
-
-        interval_seconds = settings.CRAWL_INTERVAL_HOURS * 3600
-        # Initial next-run estimate (from startup), updated after each run.
-        self.next_extraction_at = (
-            datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)
-        ).isoformat()
+        """Run extraction on configured weekdays (or fixed interval fallback)."""
+        from datetime import datetime, timezone
 
         while self.running:
             try:
-                await asyncio.sleep(interval_seconds)
+                if uses_weekday_schedule():
+                    self.next_extraction_at = next_scheduled_crawl_utc().isoformat()
+                else:
+                    from datetime import timedelta
+                    interval_seconds = settings.CRAWL_INTERVAL_HOURS * 3600
+                    self.next_extraction_at = (
+                        datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)
+                    ).isoformat()
+
+                sleep_seconds = seconds_until_next_crawl()
+                logger.info(
+                    "Next scheduled extraction at %s (sleep %.0fs)",
+                    self.next_extraction_at,
+                    sleep_seconds,
+                )
+                await asyncio.sleep(sleep_seconds)
                 if self.running:
-                    await self.run_extraction_once()
-                self.next_extraction_at = (
-                    datetime.now(timezone.utc) + timedelta(seconds=interval_seconds)
-                ).isoformat()
+                    # Scheduled tick: process all active pages (ignore per-page frequency).
+                    await self.run_extraction_once(force=True)
             except asyncio.CancelledError:
                 break
             except Exception as e:

@@ -17,8 +17,16 @@ def _require_live_llm_backend() -> None:
     """Integration tests call the real Chat model from `get_chat_llm` (matches app/agents/agent1.py)."""
     from app.core.config import settings
 
-    provider = (settings.LLM_PROVIDER or "openai").lower().strip()
-    if provider == "openai":
+    provider = (settings.LLM_PROVIDER or "anthropic").lower().strip()
+    if provider == "claude":
+        provider = "anthropic"
+    if provider == "anthropic":
+        key = (settings.ANTHROPIC_API_KEY or "").strip()
+        if not key:
+            pytest.skip(
+                "LLM_PROVIDER=anthropic requires ANTHROPIC_API_KEY (or CLAUDE_API_KEY)."
+            )
+    elif provider == "openai":
         key = (settings.OPENAI_API_KEY or "").strip()
         if not key:
             pytest.skip(

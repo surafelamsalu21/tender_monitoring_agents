@@ -8,11 +8,13 @@ import { StatCard } from './StatCard';
 import { Stats, SystemStatus, Tender } from '../types';
 import { ExtractionPhase } from '../hooks/useApi';
 import { isTenderCreatedLocalToday } from '../utils/tenderDates';
+import { AuthUser } from '../services/api';
 
 interface DashboardProps {
   stats: Stats;
   systemStatus: SystemStatus;
   tenders: Tender[];
+  currentUser?: AuthUser;
   onTriggerExtraction: () => void;
   isExtracting?: boolean;
   extractionPhase?: ExtractionPhase | null;
@@ -36,16 +38,23 @@ const PHASE_STEPS: { key: ExtractionPhase; label: string }[] = [
   { key: 'finishing', label: 'Done' },
 ];
 
+const ANALYST_OR_ABOVE = new Set(['analyst', 'admin', 'super_admin']);
+
 export const Dashboard: React.FC<DashboardProps> = ({
   stats,
   systemStatus,
   tenders,
+  currentUser,
   onTriggerExtraction,
   isExtracting = false,
   extractionPhase = null,
   extractionPhaseLabel = '',
   extractionProgress = 0,
 }) => {
+  const canTriggerScan =
+    !currentUser ||
+    currentUser.is_superuser ||
+    ANALYST_OR_ABOVE.has(currentUser.role);
   const [progressDismissed, setProgressDismissed] = useState(false);
 
   // Re-show the panel automatically when a new extraction starts
@@ -271,22 +280,29 @@ export const Dashboard: React.FC<DashboardProps> = ({
       <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-8">
         <h3 className="text-xl font-semibold text-gray-900 mb-6">Quick Actions</h3>
         <div className="flex flex-wrap gap-4 mb-6">
-          <button
-            onClick={onTriggerExtraction}
-            disabled={isExtracting}
-            className={`flex items-center px-6 py-3 rounded-lg font-medium text-base transition-all ${
-              isExtracting
-                ? 'bg-primary-400 text-white cursor-not-allowed opacity-80'
-                : 'bg-primary-600 text-white hover:bg-primary-700'
-            }`}
-          >
-            {isExtracting ? (
-              <Loader2 className="h-5 w-5 mr-3 animate-spin" />
-            ) : (
-              <Play className="h-5 w-5 mr-3" />
-            )}
-            {isExtracting ? 'Extraction Running…' : 'Trigger Manual Extraction'}
-          </button>
+          {canTriggerScan ? (
+            <button
+              onClick={onTriggerExtraction}
+              disabled={isExtracting}
+              className={`flex items-center px-6 py-3 rounded-lg font-medium text-base transition-all ${
+                isExtracting
+                  ? 'bg-primary-400 text-white cursor-not-allowed opacity-80'
+                  : 'bg-primary-600 text-white hover:bg-primary-700'
+              }`}
+            >
+              {isExtracting ? (
+                <Loader2 className="h-5 w-5 mr-3 animate-spin" />
+              ) : (
+                <Play className="h-5 w-5 mr-3" />
+              )}
+              {isExtracting ? 'Extraction Running…' : 'Trigger Manual Extraction'}
+            </button>
+          ) : (
+            <div className="flex items-center px-6 py-3 rounded-lg font-medium text-base bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed select-none">
+              <Play className="h-5 w-5 mr-3 opacity-40" />
+              Manual scan not available for your role
+            </div>
+          )}
         </div>
 
         {/* Live progress panel */}

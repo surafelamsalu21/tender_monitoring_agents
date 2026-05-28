@@ -60,6 +60,8 @@ export const Settings: React.FC = () => {
   const [schedulerStatus, setSchedulerStatus] = useState<{
     active: boolean;
     interval_hours: number;
+    schedule_description?: string;
+    uses_weekday_schedule?: boolean;
     in_progress: boolean;
     started_at: string | null;
     last_run_at: string | null;
@@ -747,12 +749,24 @@ export const Settings: React.FC = () => {
             </label>
             <input
               type="text"
-              value={`Every ${schedulerStatus?.interval_hours ?? 12} hours (fixed)`}
+              value={
+                schedulerStatus?.schedule_description
+                  ? `${schedulerStatus.schedule_description} (automatic)`
+                  : schedulerStatus?.interval_hours != null
+                    ? schedulerStatus.interval_hours % 24 === 0 &&
+                      schedulerStatus.interval_hours >= 24
+                      ? `Every ${schedulerStatus.interval_hours / 24} day${
+                          schedulerStatus.interval_hours / 24 === 1 ? '' : 's'
+                        } (automatic)`
+                      : `Every ${schedulerStatus.interval_hours} hours (automatic)`
+                    : 'Monday, Thursday at 09:00 (automatic)'
+              }
               className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700"
               disabled
             />
             <p className="text-xs text-gray-500 mt-1">
-              The scheduler runs automatically at this cadence. The cadence is fixed system-wide.
+              Scheduled runs process all active monitored pages. Weekends are skipped when only
+              weekdays are configured (e.g. Monday and Thursday).
             </p>
           </div>
 

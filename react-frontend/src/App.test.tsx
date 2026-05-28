@@ -7,8 +7,8 @@ jest.mock('./services/api', () => ({
   setAuthToken: jest.fn(),
 }));
 
-test('renders Precise tender monitoring branding on login', () => {
+test('renders Precise branding on login', () => {
   render(<LoginPage onLoginSuccess={() => {}} />);
   expect(screen.getByText(/^Precise$/i)).toBeInTheDocument();
-  expect(screen.getByText(/Tender monitoring/i)).toBeInTheDocument();
+  expect(screen.getByText(/Growth Accelerated/i)).toBeInTheDocument();
 });

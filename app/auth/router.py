@@ -26,6 +26,7 @@ class AuthUserResponse(BaseModel):
     full_name: str | None = None
     role: str
     is_active: bool
+    is_superuser: bool = False
 
 
 class ChangePasswordRequest(BaseModel):
@@ -65,6 +66,7 @@ async def login(payload: LoginRequest, db: Session = Depends(get_db)):
             "full_name": user.full_name,
             "role": user.role,
             "is_active": user.is_active,
+            "is_superuser": user.is_superuser,
         },
     }
 
@@ -77,6 +79,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
         full_name=current_user.full_name,
         role=current_user.role,
         is_active=current_user.is_active,
+        is_superuser=current_user.is_superuser,
     )
 
 
@@ -98,6 +101,7 @@ async def update_me(
         full_name=current_user.full_name,
         role=current_user.role,
         is_active=current_user.is_active,
+        is_superuser=current_user.is_superuser,
     )
 
 

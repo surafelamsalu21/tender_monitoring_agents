@@ -23,6 +23,8 @@ def pipeline_tty(msg: str) -> None:
 
 def active_llm_label() -> str:
     prov = (settings.LLM_PROVIDER or "").lower().strip()
+    if prov in ("anthropic", "claude"):
+        return f"anthropic/{settings.ANTHROPIC_MODEL}"
     if prov == "ollama":
         return f"ollama/{settings.OLLAMA_MODEL}"
     if prov == "openai":

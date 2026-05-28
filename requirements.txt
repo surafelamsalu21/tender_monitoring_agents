@@ -3,8 +3,11 @@ playwright>=1.40.0
 langgraph
 langchain
 langchain-openai
+langchain-anthropic
 langchain-ollama
 langchain-community
+langchain-google-genai
+langchain-groq
 sqlalchemy
 alembic
 fastapi

@@ -10,15 +10,18 @@ from app.core.asyncio_windows import apply as _apply_windows_asyncio_policy
 _apply_windows_asyncio_policy()
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
+from app.services.crawl_schedule import schedule_description, uses_weekday_schedule
 from app.core.database import create_tables
 from app.core.init_data import ensure_default_screening_keywords
 from app.services.scheduler import TenderScheduler
 from app.api.main import api_router
+from app.auth.deps import require_analyst_or_above
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -106,27 +109,39 @@ async def get_extraction_status():
 @app.get("/scheduler-status")
 async def get_scheduler_status():
     """Return cadence + last/next run timestamps so the Settings UI can display real status."""
+    schedule_label = schedule_description()
+    base = {
+        "interval_hours": settings.CRAWL_INTERVAL_HOURS,
+        "schedule_description": schedule_label,
+        "uses_weekday_schedule": uses_weekday_schedule(),
+        "schedule_weekdays": settings.CRAWL_SCHEDULE_WEEKDAYS,
+        "schedule_time": settings.CRAWL_SCHEDULE_TIME,
+        "schedule_timezone": settings.CRAWL_SCHEDULE_TIMEZONE,
+    }
     if not scheduler:
         return {
             "active": False,
-            "interval_hours": settings.CRAWL_INTERVAL_HOURS,
             "in_progress": False,
             "started_at": None,
             "last_run_at": None,
             "next_run_at": None,
+            **base,
         }
     return {
         "active": bool(getattr(scheduler, "running", False)),
-        "interval_hours": settings.CRAWL_INTERVAL_HOURS,
         "in_progress": getattr(scheduler, "extraction_in_progress", False),
         "started_at": getattr(scheduler, "extraction_started_at", None),
         "last_run_at": getattr(scheduler, "last_extraction_at", None),
         "next_run_at": getattr(scheduler, "next_extraction_at", None),
+        **base,
     }
 
 
 @app.post("/trigger-extraction")
-async def trigger_manual_extraction(force: bool = Query(True)):
+async def trigger_manual_extraction(
+    force: bool = Query(True),
+    _: User = Depends(require_analyst_or_above),
+):
     """Manually trigger tender extraction. Use force=false to respect crawl_frequency_hours."""
     if not scheduler:
         return {"error": "Scheduler not initialized"}

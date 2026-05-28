@@ -61,6 +61,12 @@ export const clearAuthToken = (): void => {
   localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
 };
 
+// Called by App.tsx once on mount so the interceptor can trigger logout
+let _onUnauthorized: (() => void) | null = null;
+export const setUnauthorizedHandler = (handler: () => void): void => {
+  _onUnauthorized = handler;
+};
+
 api.interceptors.request.use((config) => {
   const token = getAuthToken();
   if (token) {
@@ -97,14 +103,18 @@ api.interceptors.response.use(
     const url = String(cfg.url ?? '');
     if (
       error.response?.status === 401 &&
-      !cfg._retry &&
-      !url.includes('/auth/login') &&
-      getAuthToken()
+      !url.includes('/auth/login')
     ) {
-      cfg._retry = true;
-      cfg.headers = cfg.headers ?? {};
-      cfg.headers.Authorization = `Bearer ${getAuthToken()}`;
-      return api.request(cfg);
+      if (!cfg._retry && getAuthToken()) {
+        // Retry once in case of a transient auth hiccup
+        cfg._retry = true;
+        cfg.headers = cfg.headers ?? {};
+        cfg.headers.Authorization = `Bearer ${getAuthToken()}`;
+        return api.request(cfg);
+      }
+      // Retry already attempted (or no token) — token is truly expired; log out
+      clearAuthToken();
+      _onUnauthorized?.();
     }
     return Promise.reject(error);
   }
@@ -248,6 +258,11 @@ export const apiService = {
   getSchedulerStatus: async (): Promise<{
     active: boolean;
     interval_hours: number;
+    schedule_description: string;
+    uses_weekday_schedule: boolean;
+    schedule_weekdays: string;
+    schedule_time: string;
+    schedule_timezone: string;
     in_progress: boolean;
     started_at: string | null;
     last_run_at: string | null;
@@ -257,6 +272,11 @@ export const apiService = {
     return data as {
       active: boolean;
       interval_hours: number;
+      schedule_description: string;
+      uses_weekday_schedule: boolean;
+      schedule_weekdays: string;
+      schedule_time: string;
+      schedule_timezone: string;
       in_progress: boolean;
       started_at: string | null;
       last_run_at: string | null;
