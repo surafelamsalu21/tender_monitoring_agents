@@ -199,6 +199,7 @@ async def retry_pending_details_bulk(
             db,
             t.id,
             skip_date_validation=skip_date_validation,
+            send_notifications=False,  # Always suppress per-tender emails; consolidated digest sent below
         )
         outcomes.append({"tender_id": t.id, **one})
         if one.get("success"):

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { KeyRound, Lock, User as UserIcon, UserPlus } from 'lucide-react';
 import { apiService, AuthUser } from '../services/api';
+import { getApiErrorMessage } from '../utils/apiErrors';
 
 interface AccountPageProps {
   user: AuthUser;
@@ -44,8 +45,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
       onUserUpdated(updated);
       setProfileMessage({ type: 'ok', text: 'Profile saved.' });
     } catch (err: unknown) {
-      const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setProfileMessage({ type: 'err', text: typeof d === 'string' ? d : 'Could not save profile.' });
+      setProfileMessage({ type: 'err', text: getApiErrorMessage(err, 'Could not save profile.') });
     } finally {
       setProfileSaving(false);
     }
@@ -70,8 +70,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
       setNewPassword('');
       setConfirmPassword('');
     } catch (err: unknown) {
-      const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setPasswordMessage({ type: 'err', text: typeof d === 'string' ? d : 'Could not update password.' });
+      setPasswordMessage({ type: 'err', text: getApiErrorMessage(err, 'Could not update password.') });
     } finally {
       setPasswordSaving(false);
     }
@@ -96,8 +95,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
       setInviteFullName('');
       setInvitePassword('');
     } catch (err: unknown) {
-      const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setInviteMessage({ type: 'err', text: typeof d === 'string' ? d : 'Could not create user.' });
+      setInviteMessage({ type: 'err', text: getApiErrorMessage(err, 'Could not create user.') });
     } finally {
       setInviteSaving(false);
     }
@@ -125,10 +123,9 @@ export const AccountPage: React.FC<AccountPageProps> = ({ user, onUserUpdated })
       setResetNewPassword('');
       setResetConfirmPassword('');
     } catch (err: unknown) {
-      const d = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setResetMessage({
         type: 'err',
-        text: typeof d === 'string' ? d : 'Could not update password for this user.',
+        text: getApiErrorMessage(err, 'Could not update password for this user.'),
       });
     } finally {
       setResetSaving(false);

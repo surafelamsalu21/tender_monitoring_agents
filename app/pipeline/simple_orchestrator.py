@@ -13,6 +13,7 @@ from app.pipeline.agent1_structure import ListingStructureAgent
 from app.pipeline.legacy_adapter import listing_rows_to_tender_dicts
 from app.pipeline.progress import active_llm_label, pipeline_tty
 from app.pipeline.schemas import CrawlArtifactV1
+from app.utils.geo_filter import is_geography_allowed
 from app.utils.tender_deadline_gate import filter_expired_agent1_items
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,81 @@ async def run_simple_pipeline(
     pipeline_tty(
         f"[PIPELINE] .... │ checklist kept {len(all_tenders)} relevant row(s)"
     )
+
+    # Hard geo gate: deterministic allowlist check after LLM screening.
+    # Catches cases where the LLM incorrectly set geographic_fit=true for
+    # non-East-African tenders (e.g. Montenegro, Sri Lanka).
+    if all_tenders:
+        geo_before = len(all_tenders)
+        all_tenders = [
+            tender for tender in all_tenders
+            if is_geography_allowed(
+                (tender.get("screening") or {}).get("step3", {}).get("country", ""),
+                title=tender.get("title", ""),
+                description=tender.get("description", ""),
+            )
+        ]
+        geo_dropped = geo_before - len(all_tenders)
+        if geo_dropped:
+            pipeline_tty(
+                f"[PIPELINE] .... │ geo hard-gate dropped {geo_dropped} non-EA tender(s)"
+            )
+            logger.info("Simple pipeline: geo hard-gate dropped %s tender(s)", geo_dropped)
+
+    # Mission alignment mandatory gate.
+    # Tenders not about economic development of firms/farms/industries are
+    # outside Precise's core scope (e.g. transport enforcement, legal aid,
+    # governance, UNCT config, pure construction, gender/social evaluations).
+    if all_tenders:
+        mission_before = len(all_tenders)
+        all_tenders = [
+            tender for tender in all_tenders
+            if bool(
+                (tender.get("screening") or {}).get("step1", {}).get("mission_alignment")
+            )
+        ]
+        mission_dropped = mission_before - len(all_tenders)
+        if mission_dropped:
+            pipeline_tty(
+                f"[PIPELINE] .... │ mission gate dropped {mission_dropped} non-aligned tender(s)"
+            )
+            logger.info("Simple pipeline: mission gate dropped %s tender(s)", mission_dropped)
+
+    # Eligibility mandatory gate.
+    # Individual Consultant / Individual Contractor roles are for individual
+    # persons only — a consulting firm cannot apply.
+    if all_tenders:
+        elig_before = len(all_tenders)
+        all_tenders = [
+            tender for tender in all_tenders
+            if bool(
+                (tender.get("screening") or {}).get("step1", {}).get("eligibility_quick_check")
+            )
+        ]
+        elig_dropped = elig_before - len(all_tenders)
+        if elig_dropped:
+            pipeline_tty(
+                f"[PIPELINE] .... │ eligibility gate dropped {elig_dropped} individual-only tender(s)"
+            )
+            logger.info("Simple pipeline: eligibility gate dropped %s tender(s)", elig_dropped)
+
+    # Supply-only gate.
+    # Precise works on consulting/TA/BDS/research — not on goods procurement.
+    if all_tenders:
+        supply_before = len(all_tenders)
+        all_tenders = [
+            tender for tender in all_tenders
+            if "engagement_supply_only" not in (
+                (tender.get("screening") or {}).get("step2", {}).get("strategic_signals", [])
+                or []
+            )
+        ]
+        supply_dropped = supply_before - len(all_tenders)
+        if supply_dropped:
+            pipeline_tty(
+                f"[PIPELINE] .... │ supply gate dropped {supply_dropped} supply-only tender(s)"
+            )
+            logger.info("Simple pipeline: supply gate dropped %s tender(s)", supply_dropped)
 
     if not all_tenders:
         logger.info("Simple pipeline: nothing relevant after checklist screening")

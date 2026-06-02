@@ -17,6 +17,7 @@ import {
   HardDrive
 } from 'lucide-react';
 import { apiService, BackupFile, BackupStatus, getAuthToken } from '../services/api';
+import { getApiErrorMessage } from '../utils/apiErrors';
 
 interface EmailNotificationSettings {
   opportunity_emails: string[];
@@ -144,9 +145,7 @@ export const Settings: React.FC = () => {
       await loadBackups();
     } catch (err: any) {
       console.error('Error running backup:', err);
-      const detail =
-        err?.response?.data?.detail || err?.message || 'Backup failed';
-      setBackupError(String(detail));
+      setBackupError(getApiErrorMessage(err, 'Backup failed'));
     } finally {
       setBackupRunning(false);
     }
@@ -191,7 +190,7 @@ export const Settings: React.FC = () => {
       await loadBackups();
     } catch (err: any) {
       console.error('Error deleting backup:', err);
-      setBackupError(err?.response?.data?.detail || 'Failed to delete backup');
+      setBackupError(getApiErrorMessage(err, 'Failed to delete backup'));
     } finally {
       setDeletingBackup(null);
     }

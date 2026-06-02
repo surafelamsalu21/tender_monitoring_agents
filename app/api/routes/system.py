@@ -428,13 +428,13 @@ async def test_crawler(request: TestCrawlerRequest):
     try:
         url = str(request.url)
         logger.info(f"Testing crawler on URL: {url}")
-        
-        # Use the existing TenderScraper class (async context manager) to crawl the page
+
+        # First attempt: crawl4ai path via TenderScraper.
         async with TenderScraper() as scraper:
             result = await scraper.scrape_page(url)
-        
+
         if result['status'] == 'success':
-            logger.info(f"Crawler test successful for {url}")
+            logger.info(f"Crawler test successful for {url} using crawl4ai")
             return {
                 'status': 'success',
                 'url': url,
@@ -443,17 +443,68 @@ async def test_crawler(request: TestCrawlerRequest):
                 'html': result.get('html', ''),
                 'links': result.get('links', []),
                 'media': result.get('media', []),
-                'metadata': result.get('metadata', {}),
+                'metadata': {
+                    **(result.get('metadata', {}) or {}),
+                    'strategy_used': 'crawl4ai',
+                },
                 'word_count': result.get('word_count', 0),
                 'char_count': result.get('char_count', 0)
             }
-        else:
-            logger.error(f"Crawler test failed for {url}: {result.get('error', 'Unknown error')}")
-            return {
-                'status': 'failed',
-                'url': url,
-                'error': result.get('error', 'Failed to extract content from the page')
-            }
+
+        # Fallback: use Playwright for known dynamic pages or timeout-like failures.
+        error_text = str(result.get('error', '') or '')
+        error_lower = error_text.lower()
+        should_try_playwright = (
+            "ungm.org" in url.lower()
+            or "timeout" in error_lower
+            or "acs-goto" in error_lower
+            or "javascript" in error_lower
+            or "dynamic" in error_lower
+            or "proxy direct" in error_lower
+        )
+
+        if should_try_playwright:
+            logger.warning(
+                "crawl4ai test failed for %s (%s); retrying with playwright fallback.",
+                url,
+                error_text[:300],
+            )
+            from app.crawl.playwright_harvest import harvest_with_playwright
+
+            probe_page = MonitoredPage(
+                name="System Test (playwright fallback)",
+                url=url,
+                crawl_strategy="playwright",
+            )
+            pw = await harvest_with_playwright(probe_page)
+            if pw.status == "success":
+                markdown = pw.markdown or ""
+                logger.info(f"Crawler test successful for {url} using playwright fallback")
+                return {
+                    'status': 'success',
+                    'url': url,
+                    'title': '',
+                    'markdown': markdown,
+                    'html': pw.html or '',
+                    'links': pw.listing_urls or [],
+                    'media': [],
+                    'metadata': {
+                        **(pw.session_meta or {}),
+                        'strategy_used': 'playwright',
+                        'fallback_from': 'crawl4ai',
+                    },
+                    'word_count': len(markdown.split()),
+                    'char_count': len(markdown),
+                }
+
+            logger.error(f"Playwright fallback also failed for {url}: {pw.error}")
+
+        logger.error(f"Crawler test failed for {url}: {result.get('error', 'Unknown error')}")
+        return {
+            'status': 'failed',
+            'url': url,
+            'error': result.get('error', 'Failed to extract content from the page')
+        }
             
     except Exception as e:
         logger.error(f"Error testing crawler for {url}: {e}")

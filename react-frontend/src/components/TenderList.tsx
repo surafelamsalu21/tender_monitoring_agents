@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import { Tender, CategoryType } from '../types';
 import { apiService, AuthUser } from '../services/api';
+import { getApiErrorMessage } from '../utils/apiErrors';
 import {
   formatAddedToDatabase,
   isTenderCreatedLocalToday,
@@ -159,11 +160,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
       setRetryMessage(`Details saved for tender #${tender.id}.`);
       if (onRefresh) await onRefresh();
     } catch (err: unknown) {
-      const ax = err as { response?: { data?: { detail?: string } }; message?: string };
-      const msg =
-        ax?.response?.data?.detail ||
-        (err instanceof Error ? err.message : 'Retry failed');
-      setRetryMessage(msg);
+      setRetryMessage(getApiErrorMessage(err, 'Retry failed'));
       console.error('Retry detail extraction failed:', err);
     } finally {
       setRetryingId(null);
@@ -185,11 +182,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
       );
       if (onRefresh) await onRefresh();
     } catch (err: unknown) {
-      const ax = err as { response?: { data?: { detail?: string } }; message?: string };
-      const msg =
-        ax?.response?.data?.detail ||
-        (err instanceof Error ? err.message : 'Bulk retry failed');
-      setRetryMessage(msg);
+      setRetryMessage(getApiErrorMessage(err, 'Bulk retry failed'));
       console.error('Bulk retry failed:', err);
     } finally {
       setBulkRetrying(false);

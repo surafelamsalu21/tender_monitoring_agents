@@ -215,16 +215,14 @@ class TenderScheduler:
                 total_new_tenders += page_result['new_tenders_count']
                 all_email_compositions.extend(page_result['email_compositions'])
             
-            # Step 4: Send intelligent notifications using Agent 3 compositions
-            await self._send_intelligent_notifications(all_email_compositions)
-            
-            # Step 5: Fallback notifications for any unnotified tenders (if Agent 3 failed)
-            await self._send_fallback_notifications(db)
-
-            # Step 6: Automatic catch-up for pending detail extraction so users don't
+            # Step 4: Automatic catch-up for pending detail extraction so users don't
             # need to click "Retry pending details (batch)" manually every run.
             if total_new_tenders > 0:
-                await self._auto_retry_pending_details_and_notify(db)
+                await self._auto_retry_pending_details(db)
+
+            # Step 5: Send exactly one digest email for all currently unnotified,
+            # processed, screening-passed tenders.
+            await self._send_single_cycle_digest(db)
             
             logger.info(f"Extended extraction cycle completed - {total_new_tenders} new tenders processed with {len(all_email_compositions)} intelligent emails")
             
@@ -479,18 +477,18 @@ class TenderScheduler:
         except Exception as e:
             logger.error(f"Error sending fallback notifications: {e}")
 
-    async def _auto_retry_pending_details_and_notify(self, db: Session):
+    async def _auto_retry_pending_details(self, db: Session):
         """
         Automatic catch-up pass after extraction:
         - Retry Agent 2 for pending recommended tenders
-        - Send notifications for newly processed unnotified tenders
-        This mirrors the manual "Retry pending details (batch)" action.
+        - Do not send emails here; notifications are sent once at cycle end
+          as one consolidated digest.
         """
         try:
             from app.services.agent2_retry import retry_pending_details_bulk
 
             logger.info(
-                "Auto catch-up: retrying pending detail extraction (recommended only)"
+                "Auto catch-up: retrying pending detail extraction (recommended only, notifications disabled)"
             )
             result = await retry_pending_details_bulk(
                 db,
@@ -498,16 +496,67 @@ class TenderScheduler:
                 only_passed_screening=True,
                 # Pending rows often need permissive retry path.
                 skip_date_validation=True,
-                send_notifications=True,
+                send_notifications=False,
             )
             logger.info(
-                "Auto catch-up done: attempted=%s completed=%s notified_sent=%s",
+                "Auto catch-up done: attempted=%s completed=%s",
                 result.get("attempted", 0),
                 result.get("completed", 0),
-                (result.get("notification") or {}).get("sent", 0),
             )
         except Exception as exc:
             logger.error("Auto catch-up retry failed: %s", exc)
+
+    async def _send_single_cycle_digest(self, db: Session):
+        """
+        Send one consolidated digest email containing all currently unnotified,
+        screening-passed tenders that completed Agent 2 detail extraction.
+        """
+        try:
+            tenders = self.tender_repo.get_unnotified_tenders(
+                db, only_passed=True, require_processed=True
+            )
+            if not tenders:
+                logger.info("No unnotified processed screened tenders found for cycle digest")
+                return
+
+            logger.info(
+                "Sending one consolidated digest for %s screened opportunities",
+                len(tenders),
+            )
+
+            compositions: List[Dict[str, Any]] = []
+            for tender in tenders:
+                compositions.append(
+                    {
+                        "tender_data": {
+                            "id": tender.id,
+                            "title": tender.title,
+                            "url": tender.url,
+                            "date": tender.tender_date.strftime("%Y-%m-%d")
+                            if tender.tender_date
+                            else "Not specified",
+                        },
+                        "email_content": {
+                            "tender_id": tender.id,
+                            "team_category": "screening_opportunities",
+                            "subject": f"New SCREENING OPPORTUNITIES Tenders - {len(tenders)} Opportunities Found",
+                            "priority": "Medium",
+                            "summary": "Consolidated digest for this cycle.",
+                            "html_body": "",
+                        },
+                        "composition_status": "success",
+                        "email_type": "digest",
+                    }
+                )
+
+            results = await self.email_service.send_intelligent_notifications(compositions)
+            logger.info(
+                "Cycle digest send result: sent=%s failed=%s",
+                results.get("sent_successfully", 0),
+                results.get("failed_sends", 0),
+            )
+        except Exception as exc:
+            logger.error("Error sending single cycle digest: %s", exc)
     
     async def test_extended_pipeline(self):
         """Test the extended pipeline with Agent 3 (for development)"""

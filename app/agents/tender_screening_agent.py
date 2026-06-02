@@ -25,6 +25,11 @@ Advisory vs supply (for engagement and for scoring):
 - Mixed: both advisory and supply appear — set mission_alignment and activity_fit YES if the advisory part alone would pass; do not fail only because goods are also listed. engagement must be advisory_and_supply_mixed.
 - Supply-only notices: engagement supply_only; mission_alignment and activity_fit should normally be NO unless the text is mislabeled.
 
+CRITICAL — "Productive Use of Energy (PUE)" vs water projects:
+- PUE = using solar/off-grid/clean energy to POWER productive activities (solar-powered pumps, agro-processing via renewable energy, SME machinery on clean electricity). The ENERGY component is central.
+- "Productive Use of Water" / water wells / boreholes / irrigation canals / rural water supply / water resilience = WATER/WASH sector, NOT PUE. Score such items sector_relevance=false, mission_alignment=false.
+- Construction supervision of wells/boreholes/water infrastructure = civil-works supervision = NOT advisory consulting in Precise's sectors.
+
 Screening rule:
 - A relevant opportunity must score at least 3 YES out of 5.
 - Set passes=true only when yes_count>=3. Set passes=false for 0, 1, or 2 YES.
@@ -37,43 +42,58 @@ How to score honestly:
 
 Step 1 criteria:
 
-1. mission_alignment:
-   YES if it relates to economic development of firms, farms, or industries (SME growth, enterprise development, farm productivity, industrial development, value chains, market systems, access to finance for businesses, agribusiness, energy for productive use), including substantive TOR/TA/studies/BDS/MEL/strategy/sector training/policy work — including mixed notices where that advisory component is real.
-   NO for: pure goods supply (vehicles, spare parts, equipment, calibration systems, office supplies) with no substantive advisory component; construction/infrastructure (water/sanitation/WASH, roads, buildings); media/communications (graphic design, videography, photography); generic services for the buyer (security, cleaning, catering, recruitment, audit, translation, printing).
+1. mission_alignment (MANDATORY — score strictly):
+   YES if the core deliverable directly helps firms, farms, or industries operate better, grow, or access markets/finance: SME growth, enterprise development, farm productivity, industrial development, value chains, market systems, access to finance for businesses, agribusiness, energy for productive use, BDS, TA/TOR/study/MEL/strategy/training/policy — ONLY in those economic-development contexts.
+   NO for: pure goods supply (vehicles, tools, equipment, drones, cameras, spare parts, office supplies) with no substantive advisory component; construction/infrastructure (WASH, roads, buildings, wells, boreholes, water infrastructure, renovation); construction supervision/works supervision/site engineering oversight (even when called "consultancy"); monitoring/verification/TPM of water, WASH, infrastructure, or humanitarian projects; "Productive Use of Water" or rural water supply projects (NOT the same as PUE); media/communications; generic buyer services (security, cleaning, catering, recruitment, audit, translation, printing); transport regulation/enforcement; legal/justice sector work; governance reform not targeting private sector; social/inclusion programmes without enterprise focus; environmental/biodiversity work with no private sector lens; general programme evaluations of "development" or "resilience" or WASH programmes where the programme subject is NOT in energy/agri/SME/climate; architecture or construction supervision.
+   KEY TEST: "Does the core deliverable help firms, farms, or industries?" If NO → mission_alignment=false.
 
 2. sector_relevance:
    YES if the WORK ITSELF is connected to at least one of:
-   - Off-grid energy
-   - Agriculture / agribusiness
-   - Health electrification
-   - Cross-cutting (finance, climate, SMEs)
-   NO if the work is in WASH/water/sanitation infrastructure, civil works, generic IT, humanitarian logistics, peacekeeping, media production, or education unrelated to enterprise/finance.
+   - Off-grid energy / solar / mini-grid / distributed renewable / energy access
+   - Agriculture / agribusiness (helping FARMERS and AGRIBUSINESSES — NOT water supply infrastructure)
+   - Health electrification (solar for clinics, off-grid cold chain)
+   - Cross-cutting: SME finance, climate finance, blended finance, MSME/enterprise development, market systems
+   WATER/WASH IS NOT A YES SECTOR: Rural water supply, water resilience, boreholes, wells, irrigation infrastructure, "water for food security", WASH = sector_relevance=false.
+   GENERIC "DEVELOPMENT" IS NOT A SECTOR: If the notice only says "development programme", "resilience project", "rural development" without specifying energy/agri/SME/climate, score NO.
+   GENERIC ENVIRONMENT IS NOT A SECTOR: EIA/environmental assessment for infrastructure = NO. Biodiversity without enterprise link = NO.
+   NO if the work is in WASH/water/sanitation/rural water supply, civil works/construction, well/borehole drilling, humanitarian logistics, peacekeeping, generic IT, media production, transport, legal, governance, or education unrelated to enterprise/finance.
 
 3. activity_fit:
-   YES if the CORE DELIVERABLE (or substantive advisory portion of a mixed notice) is one of:
-   - Private sector development / SMEs
-   - Business Development Services (BDS)
-   - Access to finance
-   - Value chain / market systems
-   - Climate-smart / regenerative agriculture
-   - Productive Use of Energy (PUE)
-   - Research / surveys / studies (on a topic in criterion 2's sectors)
-   - Capacity building / training (in criterion 2's sectors — NOT graphic design, photography, communications, generic IT, language, or driving)
-   - Policy / stakeholder engagement
-   - TOR-led consulting, TA, MEL, strategy
-   NO for: pure goods supply/delivery/installation with no substantive advisory line items, construction/civil works, graphic design, videography, photography, film/media production, recruitment/HR, audit/accounting, legal drafting, translation, printing, vehicle supply, security, cleaning.
+   YES ONLY if the CORE DELIVERABLE (or substantive advisory portion of a mixed notice) is one of the following AND is on a topic relevant to criterion 2 sectors (energy, agriculture, finance, SMEs, climate):
+   - Private sector development / SMEs; Business Development Services (BDS); Access to finance; Value chain / market systems; Climate-smart / regenerative agriculture; Productive Use of Energy (PUE — energy, not water)
+   - Research / surveys / studies ON CRITERION-2 TOPICS (not WASH, rural water, transport, inclusion, gender, biodiversity, generic development)
+   - Capacity building / training ON CRITERION-2 TOPICS
+   - Policy / stakeholder engagement ON CRITERION-2 TOPICS
+   - TOR-led consulting, TA, MEL, strategy ON CRITERION-2 TOPICS
+   EVALUATION/TRACER/VERIFICATION RULE: An impact evaluation, tracer study, independent verification, baseline, or third-party monitoring (TPM) is ONLY YES if the text EXPLICITLY states the programme being evaluated is in energy, agriculture, SME/enterprise, or climate. "Development programme", "resilience programme", "rural programme", "water project" without sector specificity = NO.
+   CONSTRUCTION SUPERVISION RULE: Any "consultancy for construction supervision", "works supervision", "engineering oversight", "site supervision" = activity_fit=false regardless of project name.
+   WATER MONITORING RULE: Third-party monitoring (TPM), verification, or M&E of a water/WASH/rural-water/well-drilling project = activity_fit=false.
+   NO for: pure goods supply/delivery/installation; construction/civil works/well drilling; construction or works supervision; monitoring/verification/TPM of WASH/water/infrastructure/humanitarian projects; graphic design, videography, photography, film/media; recruitment/HR, audit/accounting, legal drafting, translation, printing; vehicle supply, security, cleaning; axle-load/road-transport enforcement; legal aid/rule-of-law; donor portfolio evaluations on social/WASH/generic topics; environmental EIA for infrastructure.
 
 4. geographic_fit:
    YES only when the WORK ITSELF is in one or more of these countries:
-   Burundi, Comoros, Djibouti, Eritrea, Ethiopia, Kenya, Rwanda, Somalia, South Sudan, Tanzania, Uganda, Seychelles, Madagascar.
+   Burundi, Comoros, Djibouti, Eritrea, Ethiopia, Kenya, Rwanda, Somalia, South Sudan, Sudan, Tanzania, Uganda, Seychelles, Madagascar.
+   Ethiopia is the PRIMARY focus. East Africa is the SECONDARY focus.
    Africa-wide opportunities are YES only if at least one listed country is explicitly eligible/included.
-   NO for work in: Asia, Pacific Islands (e.g. Papua New Guinea), Americas, Caribbean, Europe (e.g. Italy/Brindisi), Middle East, or West/Central/Southern/North Africa only (e.g. Nigeria, Ghana, Senegal, Egypt, South Africa, DRC).
-   If the title or description names a non-East-African country/city as the place of work, geographic_fit is NO regardless of who the buyer is.
+   NO for work in:
+   - Europe: Montenegro, Albania, Serbia, Italy, France, Germany, Spain, UK, Brindisi, or any other European country/city
+   - Asia: Sri Lanka, India, Pakistan, Bangladesh, Nepal, Vietnam, Philippines, Indonesia, China, or any other Asian country
+   - Pacific: Papua New Guinea, Australia, Fiji, or any other Pacific country
+   - Americas: Brazil, Colombia, Mexico, Haiti, United States, Canada, or any other American country
+   - Middle East: Yemen, Iraq, Syria, Saudi Arabia, UAE, Jordan, or any other Middle Eastern country
+   - West Africa: Nigeria, Ghana, Senegal, Côte d'Ivoire, Mali, or similar
+   - Central Africa: DRC, Cameroon, Congo, or similar
+   - Southern Africa: South Africa, Zimbabwe, Zambia, Mozambique, Angola, or similar
+   - North Africa: Egypt, Libya, Morocco, Algeria, Tunisia, or similar
+   STRICT: If the title or description names a non-East-African country/city as the WORK location, geographic_fit is NO regardless of who the buyer is. Do NOT set geographic_fit=true merely because the procurement organization is based in East Africa — what matters is WHERE THE WORK IS DONE.
    geographic_fit is mandatory for final passing.
 
 5. eligibility:
-   YES if for-profit consulting firms are eligible OR eligibility is unclear (and not explicitly restricted).
-   NO if explicitly restricted to NGOs only, UN agencies only, government only, universities only, or individuals only.
+   YES if for-profit consulting firms are eligible, OR eligibility is unclear (not explicitly restricted).
+   NO if restricted to: NGOs only, UN agencies only, government only, universities only, or INDIVIDUALS only.
+   CRITICAL: "Individual Consultant", "Individual Contractor", "National Individual Consultant", "International Individual Consultant" roles are for INDIVIDUAL PERSONS ONLY, not firms. Score eligibility=false for ALL such roles — a consulting firm cannot apply.
+   YES examples: RFP to firms/companies, eligibility not mentioned.
+   NO examples: "Individual consultant assignment", "Individual contractor", "National consultant (individual)".
 
 engagement (required on every row):
 - advisory_only — advisory/consulting is the core; goods minor or absent.

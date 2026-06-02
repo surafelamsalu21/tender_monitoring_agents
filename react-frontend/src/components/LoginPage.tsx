@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { apiService, setAuthToken, AuthUser } from '../services/api';
+import { getApiErrorMessage } from '../utils/apiErrors';
 
 interface LoginPageProps {
   onLoginSuccess: (user: AuthUser) => void;
@@ -23,9 +24,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
       const response = await apiService.login(email, password);
       setAuthToken(response.access_token);
       onLoginSuccess(response.user);
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail;
-      setError(detail || 'Login failed. Please check your credentials.');
+    } catch (err: unknown) {
+      setError(getApiErrorMessage(err, 'Login failed. Please check your credentials.'));
     } finally {
       setSubmitting(false);
     }

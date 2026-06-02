@@ -1,5 +1,5 @@
 // components/TestCrawler.tsx - New Test Crawler Component
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { 
   Search, 
   Play, 
@@ -35,6 +35,16 @@ interface TestCrawlerProps {
   onRefresh?: () => void;
 }
 
+type CrawlStrategy = 'crawl4ai' | 'playwright' | 'hybrid';
+
+interface StrategyRecommendation {
+  strategy: CrawlStrategy;
+  reason: string;
+  confidence: 'high' | 'medium';
+  pageType: 'static' | 'dynamic_or_difficult' | 'mixed';
+  actionLabel: string;
+}
+
 export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
   const [testUrl, setTestUrl] = useState('');
   const [testing, setTesting] = useState(false);
@@ -43,6 +53,7 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
   const [showMetadata, setShowMetadata] = useState(false);
   const [addingToPages, setAddingToPages] = useState(false);
   const [pageName, setPageName] = useState('');
+  const [selectedStrategy, setSelectedStrategy] = useState<CrawlStrategy>('crawl4ai');
 
   const isValidUrl = (url: string): boolean => {
     try {
@@ -52,6 +63,124 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
       return false;
     }
   };
+
+  const getStrategyRecommendationFromResult = (result: CrawlResult | null): StrategyRecommendation => {
+    if (!result) {
+      return {
+        strategy: 'playwright',
+        reason: 'Run a crawl test first, then recommendation will be based on extracted page content.',
+        confidence: 'high',
+        pageType: 'mixed',
+        actionLabel: 'Run a test first',
+      };
+    }
+
+    if (result.status !== 'success') {
+      const errorText = (result.error || '').toLowerCase();
+      if (
+        errorText.includes('javascript') ||
+        errorText.includes('dynamic') ||
+        errorText.includes('timeout') ||
+        errorText.includes('empty')
+      ) {
+        return {
+          strategy: 'playwright',
+          reason: 'The test indicates dynamic/JS rendering issues, so Playwright is likely needed.',
+          confidence: 'high',
+          pageType: 'dynamic_or_difficult',
+          actionLabel: 'Use playwright',
+        };
+      }
+      return {
+        strategy: 'playwright',
+        reason: 'The crawl failed; strict mode defaults to Playwright for maximum compatibility.',
+        confidence: 'high',
+        pageType: 'dynamic_or_difficult',
+        actionLabel: 'Use playwright',
+      };
+    }
+
+    const markdown = result.markdown || '';
+    const markdownLower = markdown.toLowerCase();
+    const markdownLength = markdown.length;
+    const htmlLength = result.html?.length || 0;
+    const wordCount = result.word_count || 0;
+    const linkCount = result.links?.length || 0;
+    const wordsPerLink = linkCount > 0 ? wordCount / linkCount : wordCount;
+    const hasProcurementSignal =
+      markdownLower.includes('procurement') ||
+      markdownLower.includes('tender') ||
+      markdownLower.includes('bidding') ||
+      markdownLower.includes('request for proposal') ||
+      markdownLower.includes('expression of interest');
+    const hasDocumentHeavySignal =
+      markdownLower.includes('.pdf') ||
+      markdownLower.includes('download') ||
+      markdownLower.includes('document');
+
+    if (htmlLength > 4000 && (wordCount < 120 || markdownLength < 700 || wordsPerLink < 3.5)) {
+      return {
+        strategy: 'playwright',
+        reason: 'HTML exists but readable extraction is weak relative to links, which often means JS-rendered content.',
+        confidence: 'high',
+        pageType: 'dynamic_or_difficult',
+        actionLabel: 'Use playwright',
+      };
+    }
+
+    if (
+      linkCount >= 25 &&
+      wordsPerLink < 5.5 &&
+      (hasProcurementSignal || hasDocumentHeavySignal)
+    ) {
+      return {
+        strategy: 'playwright',
+        reason: 'This looks like a procurement listing/documents page with many links and sparse extracted text.',
+        confidence: 'high',
+        pageType: 'dynamic_or_difficult',
+        actionLabel: 'Use playwright',
+      };
+    }
+
+    if (linkCount >= 35 && (wordCount < 260 || wordsPerLink < 4.8)) {
+      return {
+        strategy: 'hybrid',
+        reason: 'The page is link-heavy or content is not dense enough for strict crawl4ai confidence.',
+        confidence: 'high',
+        pageType: 'mixed',
+        actionLabel: 'Use hybrid',
+      };
+    }
+
+    if (
+      wordCount >= 500 &&
+      markdownLength >= 3000 &&
+      wordsPerLink >= 8 &&
+      linkCount <= 30 &&
+      !hasDocumentHeavySignal
+    ) {
+      return {
+        strategy: 'crawl4ai',
+        reason: 'Content extraction is very strong and stable, so crawl4ai is safe even under strict rules.',
+        confidence: 'high',
+        pageType: 'static',
+        actionLabel: 'Use crawl4ai',
+      };
+    }
+
+    return {
+      strategy: 'playwright',
+      reason: 'Strict mode uses Playwright by default unless content quality strongly proves static extraction.',
+      confidence: 'high',
+      pageType: 'dynamic_or_difficult',
+      actionLabel: 'Use playwright',
+    };
+  };
+
+  const strategyRecommendation = useMemo(
+    () => getStrategyRecommendationFromResult(crawlResult),
+    [crawlResult]
+  );
 
   const testCrawler = async () => {
     if (!testUrl.trim()) {
@@ -80,6 +209,7 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
         const urlObj = new URL(testUrl);
         setPageName(`${urlObj.hostname} - Tender Page`);
       }
+      setSelectedStrategy(getStrategyRecommendationFromResult(result).strategy);
     } catch (error) {
       console.error('Test crawler error:', error);
       setCrawlResult({
@@ -107,7 +237,8 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
     try {
       await apiService.createPage({
         url: testUrl,
-        name: pageName.trim()
+        name: pageName.trim(),
+        crawl_strategy: selectedStrategy
       });
       
       alert(`Successfully added "${pageName}" to monitored pages!`);
@@ -116,6 +247,7 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
       setTestUrl('');
       setPageName('');
       setCrawlResult(null);
+      setSelectedStrategy('crawl4ai');
       
       // Refresh pages list if callback provided
       if (onRefresh) {
@@ -261,6 +393,41 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
               </button>
             ))}
           </div>
+
+          {crawlResult && !testing && (
+            <div className="rounded-lg border border-primary-200 bg-primary-50 p-4">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <h4 className="text-sm font-semibold text-primary-900">
+                  Recommended crawl strategy: {strategyRecommendation.strategy}
+                </h4>
+                <span
+                  className={`text-xs font-medium px-2 py-1 rounded-full ${
+                    strategyRecommendation.pageType === 'static'
+                      ? 'bg-green-100 text-green-800'
+                      : strategyRecommendation.pageType === 'dynamic_or_difficult'
+                        ? 'bg-red-100 text-red-800'
+                        : 'bg-yellow-100 text-yellow-800'
+                  }`}
+                >
+                  {strategyRecommendation.pageType === 'static'
+                    ? 'Static page'
+                    : strategyRecommendation.pageType === 'dynamic_or_difficult'
+                      ? 'Dynamic / Difficult page'
+                      : 'Mixed page'}
+                </span>
+              </div>
+              <p className="text-sm text-primary-800">
+                {strategyRecommendation.reason}
+              </p>
+              <p className="text-sm font-semibold text-primary-900 mt-2">
+                {strategyRecommendation.actionLabel}
+              </p>
+              <p className="text-xs text-primary-700 mt-1">
+                Confidence: {strategyRecommendation.confidence}. If extraction is incomplete, try{' '}
+                {strategyRecommendation.strategy === 'crawl4ai' ? 'hybrid or playwright' : 'hybrid'}.
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -460,6 +627,24 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
                       className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
                     />
                   </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Crawl Strategy
+                    </label>
+                    <select
+                      value={selectedStrategy}
+                      onChange={(e) => setSelectedStrategy(e.target.value as CrawlStrategy)}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors"
+                    >
+                      <option value="crawl4ai">crawl4ai</option>
+                      <option value="playwright">playwright</option>
+                      <option value="hybrid">hybrid</option>
+                    </select>
+                    <p className="mt-2 text-xs text-gray-500">
+                      Suggested for this URL: <strong>{strategyRecommendation.strategy}</strong> ({strategyRecommendation.reason})
+                    </p>
+                  </div>
                   
                   <div className="flex items-center justify-between">
                     <div className="text-sm text-gray-600">
@@ -496,9 +681,9 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
           <h3 className="text-lg font-semibold text-primary-900 mb-3">How to Use Test Crawler</h3>
           <div className="space-y-2 text-primary-800">
             <p>1. Enter the URL of a tender/procurement page you want to monitor</p>
-            <p>2. Click "Test Crawler" to see if crawl4ai can extract content successfully</p>
-            <p>3. Review the extracted content to ensure it contains tender information</p>
-            <p>4. If successful, give the page a descriptive name and click "Add to Pages"</p>
+            <p>2. Review the recommended strategy (crawl4ai, playwright, or hybrid)</p>
+            <p>3. Click "Test Crawler" and review extracted content quality</p>
+            <p>4. If successful, confirm strategy, give the page a name, and click "Add to Pages"</p>
           </div>
           <div className="mt-4 p-3 bg-primary-100 rounded-lg">
             <p className="text-sm text-primary-700">

@@ -6,7 +6,8 @@ Updated to use email addresses from database and log all email activities
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from html import escape
 from datetime import datetime
 import logging
 import json
@@ -35,6 +36,162 @@ class EnhancedEmailService:
         # Repository for accessing and logging email settings and activities
         self.email_repo = EmailSettingsRepository()
 
+    @staticmethod
+    def _safe_int(value: Any) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _merge_to_single_digest_composition(
+        self,
+        email_compositions: List[Dict[str, Any]],
+        db: Session,
+    ) -> List[Dict[str, Any]]:
+        """
+        Collapse multiple compositions into one digest composition so each run sends a
+        single email containing all tenders across all sources/pages.
+        """
+        first = email_compositions[0]
+        first_content = first.get("email_content") or {}
+        team_category = first_content.get("team_category") or "screening_opportunities"
+
+        tender_ids: List[int] = []
+        fallback_items: List[Dict[str, str]] = []
+
+        for composition in email_compositions:
+            tender_data = composition.get("tender_data") or {}
+            email_content = composition.get("email_content") or {}
+
+            one_tid = self._safe_int(email_content.get("tender_id"))
+            if one_tid is None:
+                one_tid = self._safe_int(tender_data.get("id"))
+            if one_tid is not None:
+                tender_ids.append(one_tid)
+
+            many_ids = tender_data.get("tender_ids") or email_content.get("tender_ids") or []
+            if isinstance(many_ids, list):
+                for raw_tid in many_ids:
+                    parsed_tid = self._safe_int(raw_tid)
+                    if parsed_tid is not None:
+                        tender_ids.append(parsed_tid)
+
+        unique_tender_ids = sorted(set(tender_ids))
+        db_items: List[Dict[str, str]] = []
+
+        if unique_tender_ids:
+            rows = db.query(Tender).filter(Tender.id.in_(unique_tender_ids)).all()
+            by_id = {r.id: r for r in rows}
+            for tid in unique_tender_ids:
+                row = by_id.get(tid)
+                if not row:
+                    continue
+                db_items.append(
+                    {
+                        "title": str(row.title or "Untitled Tender"),
+                        "deadline": row.tender_date.strftime("%Y-%m-%d") if row.tender_date else "Not specified",
+                        "source": str(row.source or "N/A"),
+                        "country": str(row.country or "N/A"),
+                        "opportunity_type": str(row.opportunity_type or "N/A"),
+                        "url": str(row.url or "#"),
+                    }
+                )
+
+        # Fallback only when DB details are unavailable.
+        if not db_items:
+            for composition in email_compositions:
+                tender_data = composition.get("tender_data") or {}
+                fallback_items.append(
+                    {
+                        "title": str(tender_data.get("title") or "Untitled Tender"),
+                        "deadline": str(tender_data.get("date") or "Not specified"),
+                        "source": str((tender_data.get("screening") or {}).get("step3", {}).get("source") or "N/A"),
+                        "country": str((tender_data.get("screening") or {}).get("step3", {}).get("country") or "N/A"),
+                        "opportunity_type": str((tender_data.get("screening") or {}).get("step3", {}).get("type") or "N/A"),
+                        "url": str(tender_data.get("url") or "#"),
+                    }
+                )
+
+        all_items = db_items or fallback_items
+        total = len(all_items)
+        list_rows = []
+        for index, item in enumerate(all_items, 1):
+            list_rows.append(
+                f"""
+                <tr>
+                  <td style="padding:10px 8px; border-bottom:1px solid #e5e7eb; vertical-align:top;">{index}</td>
+                  <td style="padding:10px 8px; border-bottom:1px solid #e5e7eb; vertical-align:top; max-width:420px;">
+                    <div style="font-weight:600; color:#111827;">{escape(item["title"])}</div>
+                    <div style="margin-top:4px; font-size:12px; color:#4b5563;">
+                      Source: {escape(item["source"])} | Country: {escape(item["country"])} | Type: {escape(item["opportunity_type"])}
+                    </div>
+                  </td>
+                  <td style="padding:10px 8px; border-bottom:1px solid #e5e7eb; vertical-align:top;">{escape(item["deadline"])}</td>
+                  <td style="padding:10px 8px; border-bottom:1px solid #e5e7eb; vertical-align:top;">
+                    <a href="{escape(item['url'], quote=True)}" style="color:#2563eb; text-decoration:none;">Open</a>
+                  </td>
+                </tr>
+                """
+            )
+
+        subject = f"New SCREENING OPPORTUNITIES Tenders - {total} Opportunities Found"
+        html_body = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; margin: 20px;">
+            <div style="background: #f8f9fa; border-radius: 8px; padding: 16px;">
+              <h2 style="margin-top: 0;">New Tender Opportunities Digest</h2>
+              <p style="margin-bottom: 4px;">
+                We found <strong>{total}</strong> new tender(s) across monitored sources in this cycle.
+              </p>
+              <p style="color: #666; margin-top: 0;">
+                All tenders are listed below with key information.
+              </p>
+            </div>
+            <table style="width:100%; border-collapse:collapse; margin-top:14px; font-size:14px;">
+              <thead>
+                <tr style="background:#f3f4f6; color:#111827; text-align:left;">
+                  <th style="padding:10px 8px; border-bottom:1px solid #d1d5db; width:36px;">#</th>
+                  <th style="padding:10px 8px; border-bottom:1px solid #d1d5db;">Tender Name</th>
+                  <th style="padding:10px 8px; border-bottom:1px solid #d1d5db; white-space:nowrap;">Deadline</th>
+                  <th style="padding:10px 8px; border-bottom:1px solid #d1d5db;">Link</th>
+                </tr>
+              </thead>
+              <tbody>
+                {''.join(list_rows)}
+              </tbody>
+            </table>
+            <div style="margin-top: 22px; color: #666; font-size: 12px;">
+              Automated notification from {escape(settings.APP_NAME)}
+            </div>
+          </body>
+        </html>
+        """
+
+        merged = {
+            "tender_data": {
+                "title": "Multiple Tenders Digest",
+                "count": total,
+                "tender_ids": unique_tender_ids,
+            },
+            "email_content": {
+                "subject": subject,
+                "priority": "Medium",
+                "summary": f"Consolidated digest with {total} opportunities.",
+                "html_body": html_body,
+                "generated_at": datetime.utcnow().isoformat(),
+                "team_category": team_category,
+                "agent_version": "3.0-single-digest",
+                "tender_ids": unique_tender_ids,
+            },
+            "composition_status": "success",
+            "email_type": "digest",
+        }
+        logger.info(
+            "Merged %s intelligent email compositions into one digest composition",
+            len(email_compositions),
+        )
+        return [merged]
+
     async def send_intelligent_notifications(self, email_compositions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Sends out multiple tender notifications using AI-composed content,
@@ -60,10 +217,12 @@ class EnhancedEmailService:
                 logger.info("No email compositions to send")
                 return results
 
-            logger.info(f"Sending {len(email_compositions)} intelligent email notifications using database emails...")
-
             db = SessionLocal()
             try:
+                # Business rule: one email per run containing all tenders.
+                email_compositions = self._merge_to_single_digest_composition(email_compositions, db)
+                logger.info(f"Sending {len(email_compositions)} intelligent email notifications using database emails...")
+
                 for composition in email_compositions:
                     try:
                         # Delegate sending to per-composition worker
@@ -191,7 +350,9 @@ class EnhancedEmailService:
                     with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                         server.starttls()
                         server.login(self.email_user, self.email_password)
-                        server.send_message(msg)
+                        refused = server.send_message(msg)
+                        if refused:
+                            raise RuntimeError(f"SMTP refused recipients: {refused}")
 
                     # Log success in notification log table via repository
                     self.email_repo.log_email_notification(
@@ -327,7 +488,9 @@ class EnhancedEmailService:
                         with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                             server.starttls()
                             server.login(self.email_user, self.email_password)
-                            server.send_message(msg)
+                            refused = server.send_message(msg)
+                            if refused:
+                                raise RuntimeError(f"SMTP refused recipients: {refused}")
 
                         # Log success
                         self.email_repo.log_email_notification(
@@ -563,7 +726,9 @@ class EnhancedEmailService:
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls()
                 server.login(self.email_user, self.email_password)
-                server.send_message(msg)
+                refused = server.send_message(msg)
+                if refused:
+                    raise RuntimeError(f"SMTP refused recipients: {refused}")
 
             # Log the test attempt (success) to database
             db = SessionLocal()

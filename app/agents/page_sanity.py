@@ -22,7 +22,6 @@ _TITLE_ERROR_HINT = re.compile(
     r"\bsorry[,\s].{0,60}\b(?:not\s+found|doesn'?t\s+exist|unavailable)\b|"
     r"\brequested\s+(?:resource|url|page)\s+(?:was\s+)?not\s+found\b|"
     r"\bcontent\s+(?:is\s+)?not\s+available\b|"
-    r"\bno\s+results\s+found\b|"
     r"\bsite\s+temporarily\s+unavailable\b|"
     r"\bunder\s+maintenance\b|"
     r"\bnginx\b.{0,40}\b404\b",
@@ -74,7 +73,11 @@ def markdown_indicates_error_or_empty_notice(
     head = raw[:24000]
     low = head.lower()
     if _TITLE_ERROR_HINT.search(low):
-        return "error or not-found page (content pattern)"
+        has_procurement_terms = bool(_PROCUREMENT_HINT.search(head))
+        # Avoid false positives on real listing pages that may contain generic
+        # "not found" phrases in widgets/boilerplate while still showing notices.
+        if not has_procurement_terms or len(raw) < (min_chars_for_keyword_check * 2):
+            return "error or not-found page (content pattern)"
     if _AUTH_WALL_HINT.search(low) and len(raw) < min_chars_for_keyword_check * 5:
         return "authentication wall with little public content"
     if len(raw) < min_chars_for_keyword_check and not _PROCUREMENT_HINT.search(head):

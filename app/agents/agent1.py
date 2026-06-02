@@ -24,6 +24,7 @@ from app.agents.screening_prompt import PRECISE_SCREENING_CHECKLIST_MARKDOWN
 from app.core.config import settings
 from app.core.llm_factory import get_chat_llm
 from app.pipeline.progress import pipeline_tty
+from app.utils.geo_filter import is_geography_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,16 @@ class TenderExtractionAgent:
             if not opportunities:
                 logger.warning("Agent 1: No opportunities parsed from output")
                 logger.debug("Full raw output: %s", raw_output[:2000])
-                return []
+                # Fallback path: try structure-based extraction so we do not drop
+                # valid listing pages when checklist JSON parsing fails.
+                if page_url:
+                    logger.info("Agent 1: Falling back to listing extraction path for %s", page_url)
+                    pipeline_tty("[AGENT1] · fallback to listing extraction")
+                return await self._run_fast_pipeline(
+                    page_content=page_content,
+                    keyword_hints=keyword_hints,
+                    page_url=page_url,
+                )
 
             logger.info("Agent 1: extracted %d opportunities", len(opportunities))
 
@@ -208,7 +218,7 @@ class TenderExtractionAgent:
 1. Extract ALL tender opportunities visible in the content
 2. For each opportunity, complete Step 1 (5 YES/NO criteria) and calculate yes_count
 3. Include ONLY opportunities with yes_count >= 3. Drop 0/5, 1/5, and 2/5 rows.
-4. Geography is a strict gate: INCLUDE only if geographic_fit=true for one or more of these countries: Burundi, Comoros, Djibouti, Eritrea, Ethiopia, Kenya, Rwanda, Somalia, South Sudan, Tanzania, Uganda, Seychelles, Madagascar. If geographic_fit=false, OMIT even when yes_count>=3.
+4. Geography is a strict gate: INCLUDE only if geographic_fit=true for one or more of these countries: Burundi, Comoros, Djibouti, Eritrea, Ethiopia, Kenya, Rwanda, Somalia, South Sudan, Sudan, Tanzania, Uganda, Seychelles, Madagascar. Ethiopia is the PRIMARY focus. If geographic_fit=false, OMIT even when yes_count>=3. DO NOT set geographic_fit=true for tenders whose work location is in Europe (e.g. Montenegro, Italy, Serbia), Asia (e.g. Sri Lanka, India, Bangladesh), the Americas, Pacific, Middle East, or non-East-African Africa (e.g. Nigeria, Egypt, South Africa, DRC).
 5. Set passes_filter = true for every included row. Do not include low-match rows with passes_filter=false.
 6. Complete Step 2 (characteristics, signals, concerns) and Step 3 (title, source, country, type, deadline, budget, link)
 7. ALL output text must be in English (use source_language field to tag original language)
@@ -449,6 +459,52 @@ Extract opportunities as a JSON array only."""
 
             # Geography is a hard gate (allowed country list only).
             if not bool(step1.get("geographic_fit")):
+                continue
+
+            # Secondary hard geo gate: deterministic allowlist check to catch
+            # LLM errors where geographic_fit=true was set for non-EA countries
+            # (e.g. Montenegro, Sri Lanka).  Checks step3.country first, then
+            # falls back to title / description signals.
+            step3_check = screening.get("step3", {}) or {}
+            country_check = str(step3_check.get("country", "")).strip()
+            if not is_geography_allowed(country_check, title=title, description=description):
+                logger.info(
+                    "Agent 1 geo hard-reject: country=%r title=%r",
+                    country_check, title[:80],
+                )
+                continue
+
+            # Mission alignment is a mandatory gate — mirrors geographic_fit.
+            # Tenders not about economic development of firms, farms, or industries
+            # (e.g. transport regulation, legal aid, governance, UNCT config,
+            # pure construction, media/comms, biodiversity without enterprise link)
+            # are outside Precise's scope even when geography is correct.
+            if not bool(step1.get("mission_alignment")):
+                logger.info(
+                    "Agent 1 mission-align reject: title=%r", title[:80]
+                )
+                continue
+
+            # Eligibility is a mandatory gate.
+            # "Individual Consultant / Individual Contractor" roles are restricted
+            # to individual persons — a consulting firm cannot apply.  These should
+            # be scored eligibility_quick_check=false by the LLM; this gate
+            # enforces the rejection in code as a safety net.
+            if not bool(step1.get("eligibility_quick_check")):
+                logger.info(
+                    "Agent 1 eligibility reject: title=%r", title[:80]
+                )
+                continue
+
+            # Supply-only engagements are out of scope.
+            # Precise works on consulting, TA, BDS, research, capacity building —
+            # not on procurement/delivery of goods.
+            step2_check = screening.get("step2", {}) or {}
+            signals = step2_check.get("strategic_signals", []) or []
+            if "engagement_supply_only" in signals:
+                logger.info(
+                    "Agent 1 supply-only reject: title=%r", title[:80]
+                )
                 continue
 
             # Enrich screening data

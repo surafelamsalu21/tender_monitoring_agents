@@ -158,6 +158,7 @@ async def get_tenders(
         tenders = (
             db.query(Tender)
             .options(joinedload(Tender.detailed_tender))
+            .order_by(Tender.created_at.desc())
             .offset(skip)
             .limit(limit)
             .all()
