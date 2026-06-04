@@ -3,6 +3,7 @@ Enhanced Agent 2: Detail Extraction with Date Validation
 Validates tender dates and filters out expired tenders
 """
 import logging
+import json
 import re
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
@@ -31,11 +32,17 @@ class TenderDetailAgent:
     """
     
     def __init__(self):
-        self.llm = get_chat_llm(temperature=0.1)  # Initialize Language Model for information extraction
+        self._llm = None  # Lazily initialized; API-backed detail paths do not need an LLM.
         
         # Date validation configuration
         self.max_days_old = 90  # Maximum allowable age (in days) for tenders to be processed
         self.urgent_days_threshold = 7  # Mark as urgent if deadline within this number of days
+
+    @property
+    def llm(self):
+        if self._llm is None:
+            self._llm = get_chat_llm(temperature=0.1)
+        return self._llm
     
     async def extract_tender_details(self, tender_url: str, 
                                    basic_tender: Dict[str, Any],
@@ -60,6 +67,46 @@ class TenderDetailAgent:
                 if not should_process:
                     logger.info(f"Agent 2: Skipping expired/old tender: {basic_tender.get('title', 'Unknown')[:50]}...")
                     return self._create_skipped_details(basic_tender, "Tender expired or too old")
+
+            if self._is_un_careers_detail_url(tender_url):
+                detailed_info = await self._extract_un_careers_detailed_info_api(
+                    tender_url, basic_tender
+                )
+                if detailed_info:
+                    if not skip_date_validation:
+                        date_validation_result = self._validate_extracted_dates(
+                            detailed_info, basic_tender
+                        )
+                        detailed_info.update(date_validation_result)
+                        if date_validation_result.get("skip_processing"):
+                            return self._create_skipped_details(
+                                basic_tender, "Failed date validation"
+                            )
+                    logger.info(
+                        "Agent 2: Completed via UN Careers API for: %s...",
+                        basic_tender.get("title", "Unknown")[:50],
+                    )
+                    return detailed_info
+
+            if self._is_eu_funding_detail_url(tender_url):
+                detailed_info = await self._extract_eu_funding_detailed_info_api(
+                    tender_url, basic_tender
+                )
+                if detailed_info:
+                    if not skip_date_validation:
+                        date_validation_result = self._validate_extracted_dates(
+                            detailed_info, basic_tender
+                        )
+                        detailed_info.update(date_validation_result)
+                        if date_validation_result.get("skip_processing"):
+                            return self._create_skipped_details(
+                                basic_tender, "Failed date validation"
+                            )
+                    logger.info(
+                        "Agent 2: Completed via EU Funding API for: %s...",
+                        basic_tender.get("title", "Unknown")[:50],
+                    )
+                    return detailed_info
             
             # Step 1: Scrape the content of the individual tender page
             page_content, page_http_status = await self._scrape_tender_page(tender_url)
@@ -169,6 +216,11 @@ class TenderDetailAgent:
         Returns (markdown_or_none, http_status_or_none).
         """
         tender_url = await self._repair_undp_detail_url(tender_url) or tender_url
+        if self._is_un_careers_detail_url(tender_url):
+            text = await self._scrape_un_careers_detail_api(tender_url)
+            if text:
+                return text, 200
+
         try:
             logger.info(f"Scraping tender page: {tender_url}")
             
@@ -213,6 +265,298 @@ class TenderDetailAgent:
                 text = await self._scrape_detail_with_playwright(tender_url)
                 return text, None
             return None, None
+
+    def _is_un_careers_detail_url(self, url: str) -> bool:
+        parsed = urlparse(str(url or ""))
+        host = parsed.netloc.lower()
+        return host == "careers.un.org" and (
+            "/jobsearchdescription/" in parsed.path.lower()
+            or "/api/public/opening/jo" in parsed.path.lower()
+        )
+
+    def _is_eu_funding_detail_url(self, url: str) -> bool:
+        parsed = urlparse(str(url or ""))
+        host = parsed.netloc.lower()
+        return host in ("ec.europa.eu", "www.ec.europa.eu") and (
+            "/funding-tenders/" in parsed.path.lower()
+            and "/tender-details/" in parsed.path.lower()
+        )
+
+    def _eu_funding_cft_id(self, url: str) -> Optional[str]:
+        parsed = urlparse(str(url or ""))
+        match = re.search(r"/tender-details/([^/?#]+)", parsed.path, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return None
+
+    @staticmethod
+    def _metadata_first(metadata: Dict[str, Any], key: str) -> Any:
+        value = metadata.get(key)
+        if isinstance(value, list):
+            return value[0] if value else None
+        return value
+
+    async def _fetch_eu_funding_search_result(self, tender_url: str) -> Optional[Dict[str, Any]]:
+        cft_id = self._eu_funding_cft_id(tender_url)
+        if not cft_id:
+            return None
+
+        def _fetch() -> Optional[Dict[str, Any]]:
+            import requests
+
+            query = {"bool": {"must": [{"terms": {"cftId": [cft_id]}}]}}
+            sort = {"order": "DESC", "field": "startDate"}
+            files = {
+                "query": ("query", json.dumps(query), "application/json"),
+                "sort": ("sort", json.dumps(sort), "application/json"),
+                "languages": ("languages", json.dumps(["en"]), "application/json"),
+            }
+            resp = requests.post(
+                "https://api.tech.ec.europa.eu/search-api/prod/rest/search",
+                params={
+                    "apiKey": "SEDIA",
+                    "text": "***",
+                    "pageSize": 1,
+                    "pageNumber": 1,
+                },
+                files=files,
+                timeout=30,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            )
+            if resp.status_code >= 400:
+                return None
+            payload = resp.json()
+            results = payload.get("results") if isinstance(payload, dict) else []
+            if isinstance(results, list) and results and isinstance(results[0], dict):
+                return results[0]
+            return None
+
+        return await asyncio.to_thread(_fetch)
+
+    def _eu_documents_summary(self, metadata: Dict[str, Any]) -> str:
+        docs_raw = self._metadata_first(metadata, "cftDocuments")
+        if not docs_raw:
+            return ""
+        try:
+            docs_payload = json.loads(str(docs_raw))
+        except json.JSONDecodeError:
+            return ""
+        docs = docs_payload.get("cftDocuments") if isinstance(docs_payload, dict) else []
+        if not isinstance(docs, list):
+            return ""
+        lines = []
+        for doc in docs[:10]:
+            if not isinstance(doc, dict):
+                continue
+            title = str(doc.get("documentTitle") or "").strip()
+            dtype = str(doc.get("documentType") or "").strip()
+            refs = doc.get("hermesDocumentReferences") or []
+            filenames = [
+                str(ref.get("documentFileName") or "").strip()
+                for ref in refs
+                if isinstance(ref, dict) and ref.get("documentFileName")
+            ]
+            parts = [part for part in (dtype, title, ", ".join(filenames)) if part]
+            if parts:
+                lines.append(" - ".join(parts))
+        return "\n".join(lines)
+
+    async def _extract_eu_funding_detailed_info_api(
+        self,
+        tender_url: str,
+        basic_tender: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        result = await self._fetch_eu_funding_search_result(tender_url)
+        if not result:
+            return None
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        title = (
+            self._metadata_first(metadata, "title")
+            or result.get("summary")
+            or basic_tender.get("title")
+            or ""
+        )
+        description = str(
+            self._metadata_first(metadata, "description") or result.get("summary") or ""
+        ).strip()
+        call_id = self._metadata_first(metadata, "callIdentifier")
+        documents = self._eu_documents_summary(metadata)
+        content_parts = [
+            f"Title: {title}",
+            f"Reference: {call_id or self._eu_funding_cft_id(tender_url) or ''}",
+            f"Contract type code: {self._metadata_first(metadata, 'contractType') or ''}",
+            f"Procedure type code: {self._metadata_first(metadata, 'cftProcedureTypeCode') or ''}",
+            f"Publication date: {self._metadata_first(metadata, 'startDate') or ''}",
+            f"Deadline: {self._metadata_first(metadata, 'deadlineDate') or self._metadata_first(metadata, 'twoStageDeadlineDate') or ''}",
+            "",
+            "Description:",
+            description,
+        ]
+        if documents:
+            content_parts.extend(["", "Documents:", documents])
+        page_text = "\n".join(content_parts).strip()
+
+        return {
+            "detailed_title": str(title).strip(),
+            "detailed_description": description or page_text,
+            "requirements": page_text,
+            "deadline": self._parse_date(
+                self._metadata_first(metadata, "deadlineDate")
+                or self._metadata_first(metadata, "twoStageDeadlineDate")
+            ),
+            "submission_deadline": self._parse_date(
+                self._metadata_first(metadata, "deadlineDate")
+                or self._metadata_first(metadata, "twoStageDeadlineDate")
+            ),
+            "tender_value": None,
+            "duration": None,
+            "contact_info": {
+                "organization": "EU Funding & Tenders Portal",
+                "contact_person": None,
+                "phone": None,
+                "email": None,
+                "address": None,
+            },
+            "additional_details": f"EU Funding & Tenders call identifier: {call_id or ''}",
+            "full_content": page_text[:400_000],
+            "extracted_at": datetime.utcnow().isoformat(),
+            "page_content_length": len(page_text),
+            "source_url": basic_tender.get("url") or tender_url,
+            "extraction_status": "api",
+        }
+
+    def _un_careers_job_id(self, url: str) -> Optional[str]:
+        parsed = urlparse(str(url or ""))
+        match = re.search(r"/jobSearchDescription/(\d+)", parsed.path, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        match = re.search(r"/api/public/opening/joV?2?/(\d+)", parsed.path, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return None
+
+    async def _scrape_un_careers_detail_api(self, tender_url: str) -> Optional[str]:
+        """UN Careers detail pages are Angular shells; the public API has the notice body."""
+        try:
+            data = await self._fetch_un_careers_detail_data(tender_url)
+            if not data:
+                return None
+            from bs4 import BeautifulSoup
+
+            def _dict_name(value: Any, key: str = "name") -> str:
+                return str(value.get(key) or "").strip() if isinstance(value, dict) else ""
+
+            stations = []
+            for station in data.get("dutyStation") or []:
+                if isinstance(station, dict) and station.get("description"):
+                    stations.append(str(station["description"]).strip())
+
+            soup = BeautifulSoup(str(data.get("jobDescription") or ""), "html.parser")
+            description = "\n".join(
+                line.strip()
+                for line in soup.get_text("\n", strip=True).splitlines()
+                if line.strip()
+            )
+            title = str(data.get("postingTitle") or data.get("jobTitle") or "").strip()
+            lines = [
+                "# UN Careers Consultant Opportunity",
+                f"Title: {title}",
+                f"Reference: {data.get('jobId') or self._un_careers_job_id(tender_url) or ''}",
+                f"Department: {_dict_name(data.get('dept'))}",
+                f"Category: {_dict_name(data.get('jc')) or data.get('categoryCode') or 'Consultants'}",
+                f"Job family: {_dict_name(data.get('jf'), 'Name')}",
+                f"Duty station: {', '.join(stations)}",
+                f"Publication date: {data.get('startDate') or ''}",
+                f"Application deadline: {data.get('endDate') or ''}",
+                f"Apply URL: {data.get('inspiraURL') or ''}",
+                "",
+                "Full description:",
+                description,
+            ]
+            text = "\n".join(line for line in lines if line is not None).strip()
+            return text if len(text) > 200 else None
+        except Exception as exc:
+            logger.warning("Agent 2: UN Careers API detail fallback failed for %s: %s", tender_url, exc)
+            return None
+
+    async def _fetch_un_careers_detail_data(self, tender_url: str) -> Optional[Dict[str, Any]]:
+        job_id = self._un_careers_job_id(tender_url)
+        if not job_id:
+            return None
+
+        def _fetch() -> Optional[Dict[str, Any]]:
+            import requests
+
+            api_url = f"https://careers.un.org/api/public/opening/joV2/{job_id}/en"
+            resp = requests.get(
+                api_url,
+                timeout=30,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            )
+            if resp.status_code >= 400:
+                return None
+            payload = resp.json()
+            data = payload.get("data") if isinstance(payload, dict) else {}
+            return data if isinstance(data, dict) else None
+
+        return await asyncio.to_thread(_fetch)
+
+    async def _extract_un_careers_detailed_info_api(
+        self,
+        tender_url: str,
+        basic_tender: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        data = await self._fetch_un_careers_detail_data(tender_url)
+        if not data:
+            return None
+
+        page_text = await self._scrape_un_careers_detail_api(tender_url) or ""
+        from bs4 import BeautifulSoup
+
+        body_text = BeautifulSoup(
+            str(data.get("jobDescription") or ""), "html.parser"
+        ).get_text("\n", strip=True)
+        stations = [
+            str(station.get("description") or "").strip()
+            for station in (data.get("dutyStation") or [])
+            if isinstance(station, dict) and station.get("description")
+        ]
+        dept = data.get("dept") if isinstance(data.get("dept"), dict) else {}
+        title = str(
+            data.get("postingTitle") or data.get("jobTitle") or basic_tender.get("title") or ""
+        ).strip()
+
+        return {
+            "detailed_title": title,
+            "detailed_description": body_text[:12000],
+            "requirements": body_text[:12000],
+            "deadline": self._parse_date(data.get("endDate")),
+            "submission_deadline": self._parse_date(data.get("endDate")),
+            "tender_value": None,
+            "duration": self._extract_un_careers_duration(body_text),
+            "contact_info": {
+                "organization": str(dept.get("name") or "UN Careers").strip(),
+                "contact_person": None,
+                "phone": None,
+                "email": None,
+                "address": ", ".join(stations) or None,
+            },
+            "additional_details": (
+                f"UN Careers consultant opportunity. Job ID: {data.get('jobId')}. "
+                f"Apply URL: {data.get('inspiraURL') or tender_url}"
+            ),
+            "full_content": page_text[:400_000],
+            "extracted_at": datetime.utcnow().isoformat(),
+            "page_content_length": len(page_text),
+            "source_url": basic_tender.get("url") or tender_url,
+            "extraction_status": "api",
+        }
+
+    def _extract_un_careers_duration(self, text: str) -> Optional[str]:
+        match = re.search(r"Expected duration\s*\n+\s*([^\n]{1,120})", text or "", re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return None
 
     def _is_undp_url(self, url: str) -> bool:
         return urlparse(str(url or "")).netloc.lower() == "procurement-notices.undp.org"

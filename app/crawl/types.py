@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, List, Literal, Optional
 
-CrawlStrategy = Literal["crawl4ai", "playwright", "hybrid"]
+CrawlStrategy = Literal["crawl4ai", "playwright", "hybrid", "un_careers", "eu_funding"]
 
 
 @dataclass

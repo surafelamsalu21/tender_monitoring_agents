@@ -46,6 +46,12 @@ def listing_rows_to_tender_dicts(
 ) -> list[dict[str, Any]]:
     """Convert Agent 1 structural output into the dict shape used downstream."""
     tenders: list[dict[str, Any]] = []
+    source = ""
+    host = urlparse(page_url or "").netloc.lower()
+    if "careers.un.org" in host:
+        source = "UN Careers"
+    elif "ec.europa.eu" in host and "funding-tenders" in (page_url or ""):
+        source = "EU Funding & Tenders Portal"
     for row in rows:
         title = (row.title or "").strip()
         if not title:
@@ -56,7 +62,7 @@ def listing_rows_to_tender_dicts(
 
         step3: dict[str, Any] = {
             "title": title,
-            "source": "",
+            "source": source,
             "country": (row.country or "").strip(),
             "type": "other",
             "deadline": deadline_norm,

@@ -104,7 +104,7 @@ export interface Page {
   url: string;
   name: string;
   is_active: boolean;
-  crawl_strategy?: 'crawl4ai' | 'playwright' | 'hybrid';
+  crawl_strategy?: 'crawl4ai' | 'playwright' | 'hybrid' | 'un_careers' | 'eu_funding';
   created_at: string;
   updated_at: string;
 }

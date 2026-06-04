@@ -44,6 +44,7 @@ Step 1 criteria:
 
 1. mission_alignment (MANDATORY — score strictly):
    YES if the core deliverable directly helps firms, farms, or industries operate better, grow, or access markets/finance: SME growth, enterprise development, farm productivity, industrial development, value chains, market systems, access to finance for businesses, agribusiness, energy for productive use, BDS, TA/TOR/study/MEL/strategy/training/policy — ONLY in those economic-development contexts.
+   POLICY ADVISORY ALLOWANCE (EA ONLY): For Ethiopia/East-Africa opportunities, treat mission_alignment as YES when the core advisory scope is explicitly about economic policy, financial architecture reform, or public financial management reform with institutional advisory/coordination support (not supply/construction and not generic admin support).
    NO for: pure goods supply (vehicles, tools, equipment, drones, cameras, spare parts, office supplies) with no substantive advisory component; construction/infrastructure (WASH, roads, buildings, wells, boreholes, water infrastructure, renovation); construction supervision/works supervision/site engineering oversight (even when called "consultancy"); monitoring/verification/TPM of water, WASH, infrastructure, or humanitarian projects; "Productive Use of Water" or rural water supply projects (NOT the same as PUE); media/communications; generic buyer services (security, cleaning, catering, recruitment, audit, translation, printing); transport regulation/enforcement; legal/justice sector work; governance reform not targeting private sector; social/inclusion programmes without enterprise focus; environmental/biodiversity work with no private sector lens; general programme evaluations of "development" or "resilience" or WASH programmes where the programme subject is NOT in energy/agri/SME/climate; architecture or construction supervision.
    KEY TEST: "Does the core deliverable help firms, farms, or industries?" If NO → mission_alignment=false.
 
@@ -53,6 +54,7 @@ Step 1 criteria:
    - Agriculture / agribusiness (helping FARMERS and AGRIBUSINESSES — NOT water supply infrastructure)
    - Health electrification (solar for clinics, off-grid cold chain)
    - Cross-cutting: SME finance, climate finance, blended finance, MSME/enterprise development, market systems
+   POLICY ADVISORY ALLOWANCE (EA ONLY): For Ethiopia/East-Africa opportunities, institutional advisory work on economic policy, macro-financial architecture, or public financial management reform counts as sector_relevance=YES.
    WATER/WASH IS NOT A YES SECTOR: Rural water supply, water resilience, boreholes, wells, irrigation infrastructure, "water for food security", WASH = sector_relevance=false.
    GENERIC "DEVELOPMENT" IS NOT A SECTOR: If the notice only says "development programme", "resilience project", "rural development" without specifying energy/agri/SME/climate, score NO.
    GENERIC ENVIRONMENT IS NOT A SECTOR: EIA/environmental assessment for infrastructure = NO. Biodiversity without enterprise link = NO.
@@ -65,6 +67,7 @@ Step 1 criteria:
    - Capacity building / training ON CRITERION-2 TOPICS
    - Policy / stakeholder engagement ON CRITERION-2 TOPICS
    - TOR-led consulting, TA, MEL, strategy ON CRITERION-2 TOPICS
+   POLICY ADVISORY ALLOWANCE (EA ONLY): In Ethiopia/East-Africa, institutional advisory/coordination assignments focused on economic policy, financial architecture, or public financial management reform can be activity_fit=YES.
    EVALUATION/TRACER/VERIFICATION RULE: An impact evaluation, tracer study, independent verification, baseline, or third-party monitoring (TPM) is ONLY YES if the text EXPLICITLY states the programme being evaluated is in energy, agriculture, SME/enterprise, or climate. "Development programme", "resilience programme", "rural programme", "water project" without sector specificity = NO.
    CONSTRUCTION SUPERVISION RULE: Any "consultancy for construction supervision", "works supervision", "engineering oversight", "site supervision" = activity_fit=false regardless of project name.
    WATER MONITORING RULE: Third-party monitoring (TPM), verification, or M&E of a water/WASH/rural-water/well-drilling project = activity_fit=false.
@@ -153,6 +156,11 @@ def _merge_legacy_screening(
         strategic_signals.append(engagement_token)
 
     date_s = str(item.get("date") or "").strip()
+    existing_step3 = ((item.get("screening") or {}).get("step3") or {})
+    source = str(existing_step3.get("source") or item.get("source") or "").strip()
+    country = str(existing_step3.get("country") or item.get("country") or "").strip()
+    opportunity_type = str(existing_step3.get("type") or item.get("type") or "other").strip()
+    link = str(existing_step3.get("link") or item.get("url") or "").strip()
     screening: Dict[str, Any] = {
         "unrelated_to_precise_scope": unrelated,
         "step1": step1,
@@ -165,12 +173,12 @@ def _merge_legacy_screening(
         },
         "step3": {
             "title": item.get("title", ""),
-            "source": "",
-            "country": "",
-            "type": "other",
+            "source": source,
+            "country": country,
+            "type": opportunity_type or "other",
             "deadline": date_s[:64] if date_s else "",
             "estimated_budget": None,
-            "link": item.get("url", ""),
+            "link": link,
         },
         "screening_version": "v2_fast_local",
     }

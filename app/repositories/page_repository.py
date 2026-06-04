@@ -15,19 +15,38 @@ class PageRepository:  # Repository pattern encapsulating all DB ops on Monitore
     
     def get_active_pages(self, db: Session) -> List[MonitoredPage]:  # Gets all pages marked as active from DB
         """Get all active monitored pages"""  # Docstring for method
-        return db.query(MonitoredPage).filter(MonitoredPage.is_active == True).all()  # Query active pages using SQLAlchemy
+        return (
+            db.query(MonitoredPage)
+            .filter(
+                MonitoredPage.is_active == True,
+                MonitoredPage.is_deleted == False,
+            )
+            .all()
+        )  # Query active non-deleted pages using SQLAlchemy
     
     def get_all_pages(self, db: Session) -> List[MonitoredPage]:  # Returns all monitored page records
         """Get all monitored pages"""  # Docstring for method
-        return db.query(MonitoredPage).all()  # DB call to fetch all monitored pages
+        return (
+            db.query(MonitoredPage)
+            .filter(MonitoredPage.is_deleted == False)
+            .all()
+        )  # DB call to fetch non-deleted monitored pages
     
     def get_page_by_id(self, db: Session, page_id: int) -> Optional[MonitoredPage]:  # Find monitored page by PK id
         """Get page by ID"""  # Docstring for method
-        return db.query(MonitoredPage).filter(MonitoredPage.id == page_id).first()  # Filter by id and get first result; None if not found
+        return (
+            db.query(MonitoredPage)
+            .filter(MonitoredPage.id == page_id, MonitoredPage.is_deleted == False)
+            .first()
+        )  # Filter by id and ignore soft-deleted rows
     
     def get_page_by_url(self, db: Session, url: str) -> Optional[MonitoredPage]:  # Find monitored page by its URL
         """Get page by URL"""  # Docstring for method
-        return db.query(MonitoredPage).filter(MonitoredPage.url == url).first()  # Filter by URL, get single or None
+        return (
+            db.query(MonitoredPage)
+            .filter(MonitoredPage.url == url, MonitoredPage.is_deleted == False)
+            .first()
+        )  # Filter by URL and ignore soft-deleted rows
     
     def create_page(
         self,
@@ -75,13 +94,18 @@ class PageRepository:  # Repository pattern encapsulating all DB ops on Monitore
         return page  # Return updated object
     
     def delete_page(self, db: Session, page_id: int) -> bool:  # Delete the page by id
-        """Delete a monitored page and related tenders, details, and crawl logs (ORM cascades)."""
+        """Soft-delete (archive) a monitored page while preserving already-found tenders."""
         page = self.get_page_by_id(db, page_id)  # Lookup object
         if not page:
             return False  # Indicate not found
 
         try:
-            db.delete(page)  # Remove from DB session
+            archived_url = f"{page.url}#archived-{page.id}-{int(datetime.utcnow().timestamp())}"
+            # Free the original unique URL so users can add the same source again later.
+            page.url = archived_url[:1000]
+            page.is_deleted = True
+            page.is_active = False
+            page.updated_at = datetime.utcnow()
             db.commit()  # Save changes
             return True  # Indicate delete success
         except IntegrityError:

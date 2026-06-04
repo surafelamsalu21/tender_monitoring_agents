@@ -13,7 +13,7 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
   const [newPage, setNewPage] = useState<{
     url: string;
     name: string;
-    crawl_strategy: 'crawl4ai' | 'playwright' | 'hybrid';
+    crawl_strategy: Page['crawl_strategy'];
   }>({ url: '', name: '', crawl_strategy: 'crawl4ai' });
 
   const handleAddPage = async (e: React.FormEvent) => {
@@ -47,7 +47,7 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
   };
 
   const handleDeletePage = async (id: number) => {
-    if (window.confirm('Are you sure you want to delete this page?')) {
+    if (window.confirm('Archive this page? Already-found tenders will be kept.')) {
       try {
         await apiService.deletePage(id);
         onRefresh();
@@ -111,7 +111,8 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
               />
               <p className="mt-1 text-xs text-gray-500">
                 For UNDP Africa: use <code>https://procurement-notices.undp.org/?region=RAF</code> + Playwright.
-                For EU Funding Portal: use Playwright (the site is a JavaScript SPA).
+                For EU Funding Portal: use EU Funding API.
+                For filtered UN Careers consultant pages: use UN Careers API.
               </p>
             </div>
             <div>
@@ -123,7 +124,7 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
                 onChange={(e) =>
                   setNewPage({
                     ...newPage,
-                    crawl_strategy: e.target.value as 'crawl4ai' | 'playwright' | 'hybrid',
+                    crawl_strategy: e.target.value as Page['crawl_strategy'],
                   })
                 }
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
@@ -131,9 +132,11 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
                 <option value="crawl4ai">crawl4ai</option>
                 <option value="playwright">playwright</option>
                 <option value="hybrid">hybrid</option>
+                <option value="un_careers">UN Careers API</option>
+                <option value="eu_funding">EU Funding API</option>
               </select>
               <p className="mt-1 text-xs text-gray-500">
-                Use <strong>Playwright</strong> for JavaScript SPAs (EU Funding Portal, UNDP) and pages requiring filter/login interaction.
+                Use source-specific API strategies for filtered UN Careers and EU Funding portal pages.
               </p>
             </div>
             <div className="flex gap-3">
@@ -194,6 +197,8 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
                       <option value="crawl4ai">crawl4ai</option>
                       <option value="playwright">playwright</option>
                       <option value="hybrid">hybrid</option>
+                      <option value="un_careers">UN Careers API</option>
+                      <option value="eu_funding">EU Funding API</option>
                     </select>
                   </div>
                 </div>
@@ -212,7 +217,7 @@ export const PageManager: React.FC<PageManagerProps> = ({ pages, onRefresh }) =>
                   <button
                     onClick={() => handleDeletePage(page.id)}
                     className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                    title="Delete"
+                    title="Archive page"
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>

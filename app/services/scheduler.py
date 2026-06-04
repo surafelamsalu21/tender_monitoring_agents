@@ -37,6 +37,11 @@ def _normalize_crawl_strategy(page: MonitoredPage) -> str:
     return (getattr(page, "crawl_strategy", None) or "crawl4ai").strip().lower()
 
 
+def _force_simple_pipeline_for_strategy(strategy: str) -> bool:
+    # API-backed structured sources should bypass checklist/langgraph Agent 1.
+    return strategy in {"un_careers", "eu_funding"}
+
+
 class TenderScheduler:
     """Background scheduler with Agent 3 integration for intelligent email notifications"""
     
@@ -298,6 +303,7 @@ class TenderScheduler:
 
             crawl_artifact = crawl_artifact_from_harvest(harvest)
             pipeline_mode = (settings.PIPELINE_MODE or "simple").strip().lower()
+            force_simple_pipeline = _force_simple_pipeline_for_strategy(strategy)
             if pipeline_mode in ("langgraph", "legacy"):
                 agent_md, listing_for_expiry = dual_markdown_for_agent1_and_expiry(
                     page.url,
@@ -305,7 +311,7 @@ class TenderScheduler:
                     harvest.listing_urls,
                     html=harvest.html,
                 )
-                crawl_artifact_kw = None
+                crawl_artifact_kw = crawl_artifact if force_simple_pipeline else None
             else:
                 agent_md = harvest.markdown or ""
                 listing_for_expiry = harvest.markdown or ""
@@ -314,6 +320,7 @@ class TenderScheduler:
             pipeline_tty(
                 f"[PIPELINE] · handoff | {len(harvest.markdown or ''):,} chars | "
                 f"links={len(harvest.listing_urls)} | pipeline={pipeline_mode}"
+                f"{'→simple-forced' if force_simple_pipeline else ''}"
             )
 
             try:
@@ -327,6 +334,7 @@ class TenderScheduler:
                     db=db,
                     listing_markdown_for_expiry=listing_for_expiry,
                     crawl_artifact=crawl_artifact_kw,
+                    force_simple_pipeline=force_simple_pipeline,
                 )
 
                 logger.info("Extended agent pipeline completed")

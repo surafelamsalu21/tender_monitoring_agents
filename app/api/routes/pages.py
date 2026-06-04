@@ -14,7 +14,7 @@ from app.models.page import MonitoredPage
 
 router = APIRouter()
 
-CrawlStrategyLiteral = Literal["crawl4ai", "playwright", "hybrid"]
+CrawlStrategyLiteral = Literal["crawl4ai", "playwright", "hybrid", "un_careers", "eu_funding"]
 
 
 def _page_auth_dict(page: MonitoredPage) -> dict:
@@ -171,7 +171,7 @@ async def update_page(page_id: int, page_data: PageUpdate, db: Session = Depends
 
 @router.delete("/{page_id}")
 async def delete_page(page_id: int, db: Session = Depends(get_db)):
-    """Delete a monitored page"""
+    """Archive a monitored page without deleting historical tenders."""
     page_repo = PageRepository()
 
     try:
@@ -184,7 +184,7 @@ async def delete_page(page_id: int, db: Session = Depends(get_db)):
     if not success:
         raise HTTPException(status_code=404, detail="Page not found")
 
-    return {"message": "Page deleted successfully"}
+    return {"message": "Page archived successfully. Existing tenders were preserved."}
 
 @router.get("/{page_id}/tenders")
 async def get_page_tenders(page_id: int, limit: int = 50, db: Session = Depends(get_db)):

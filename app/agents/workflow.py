@@ -539,6 +539,7 @@ class TenderAgent:
         screening_config: Dict[str, Any] = None,
         listing_markdown_for_expiry: Optional[str] = None,
         crawl_artifact: Optional[CrawlArtifactV1] = None,
+        force_simple_pipeline: bool = False,
     ) -> Dict[str, Any]:
         """Entry-point: orchestrates the entire tender processing workflow.
 
@@ -570,11 +571,18 @@ class TenderAgent:
         )
 
         pipeline_mode = (settings.PIPELINE_MODE or "simple").strip().lower()
-        if pipeline_mode not in ("langgraph", "legacy"):
+        use_simple_pipeline = force_simple_pipeline or pipeline_mode not in ("langgraph", "legacy")
+        if use_simple_pipeline:
             try:
                 from app.pipeline.simple_orchestrator import run_simple_pipeline
 
-                logger.info("Running pipeline mode=%s (crawler-centric linear)", pipeline_mode)
+                if force_simple_pipeline:
+                    logger.info(
+                        "Running simple pipeline (forced for structured source) while PIPELINE_MODE=%s",
+                        pipeline_mode,
+                    )
+                else:
+                    logger.info("Running pipeline mode=%s (crawler-centric linear)", pipeline_mode)
                 return await run_simple_pipeline(
                     page_content=page_content,
                     page_url=page_url,

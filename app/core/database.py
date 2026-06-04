@@ -188,6 +188,29 @@ def ensure_monitored_pages_playwright_auth_columns() -> None:
         logger.warning("playwright auth columns migration skipped: %s", e)
 
 
+def ensure_monitored_pages_soft_delete_column() -> None:
+    """Add is_deleted for existing DBs so page delete can archive without deleting tenders."""
+    from sqlalchemy import inspect
+
+    try:
+        inspector = inspect(engine)
+        if "monitored_pages" not in inspector.get_table_names():
+            return
+        cols = {c["name"] for c in inspector.get_columns("monitored_pages")}
+        if "is_deleted" in cols:
+            return
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE monitored_pages ADD COLUMN is_deleted "
+                    "BOOLEAN DEFAULT 0 NOT NULL"
+                )
+            )
+        logger.info("DB migration: monitored_pages.is_deleted added")
+    except OperationalError as e:
+        logger.warning("is_deleted migration skipped: %s", e)
+
+
 def get_db() -> Session:
     """
     Dependency to get database session
@@ -207,6 +230,7 @@ def create_tables():
         Base.metadata.create_all(bind=engine)
         ensure_monitored_pages_crawl_strategy_column()
         ensure_monitored_pages_playwright_auth_columns()
+        ensure_monitored_pages_soft_delete_column()
         repair_sqlite_blank_datetime_columns()
         logger.info("Database tables created successfully")
     except Exception as e:

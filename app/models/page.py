@@ -18,6 +18,7 @@ class MonitoredPage(Base):
     
     # Monitoring settings
     is_active = Column(Boolean, default=True, index=True)
+    is_deleted = Column(Boolean, default=False, nullable=False, index=True)
     crawl_frequency_hours = Column(Integer, default=3)  # How often to crawl this page
     # crawl4ai | playwright | hybrid — see ideas/crawl-agent-next-build-spec.md
     crawl_strategy = Column(String(32), nullable=False, default="crawl4ai", index=True)

@@ -27,6 +27,11 @@ from app.core.config import settings
 
 router = APIRouter()
 
+
+def _force_simple_pipeline_for_page(page: MonitoredPage) -> bool:
+    strategy = (getattr(page, "crawl_strategy", None) or "crawl4ai").strip().lower()
+    return strategy in {"un_careers", "eu_funding"}
+
 # --------------------------
 # Pydantic Models
 # --------------------------
@@ -631,6 +636,7 @@ async def test_full_pipeline(request: PipelineTestRequest, db: Session = Depends
             db=db,
             listing_markdown_for_expiry=listing_for_expiry,
             crawl_artifact=crawl_kw,
+            force_simple_pipeline=_force_simple_pipeline_for_page(page),
         )
 
         if workflow_result.get("workflow_failed"):

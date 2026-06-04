@@ -12,11 +12,40 @@ from app.core.config import settings
 from app.pipeline.agent1_structure import ListingStructureAgent
 from app.pipeline.legacy_adapter import listing_rows_to_tender_dicts
 from app.pipeline.progress import active_llm_label, pipeline_tty
-from app.pipeline.schemas import CrawlArtifactV1
+from app.pipeline.schemas import CrawlArtifactV1, ListingRowV1
 from app.utils.geo_filter import is_geography_allowed
 from app.utils.tender_deadline_gate import filter_expired_agent1_items
 
 logger = logging.getLogger(__name__)
+
+
+_EA_POLICY_TERMS = (
+    "economic policy",
+    "financial architecture",
+    "public financial management",
+    "pfm",
+    "macroeconomic",
+    "economic modeling",
+)
+
+
+def _is_ea_policy_advisory_allowance(tender: Dict[str, Any]) -> bool:
+    """Allow specific EA policy advisory opportunities to pass mission/sector/activity gates."""
+    screening = tender.get("screening") or {}
+    step3 = screening.get("step3") or {}
+    country = str(step3.get("country") or "").lower()
+    title = str(tender.get("title") or "").lower()
+    description = str(tender.get("description") or "").lower()
+    hay = f"{title}\n{description}"
+
+    # Must still be geographically valid and consultancy-like.
+    if not is_geography_allowed(country, title=title, description=description):
+        return False
+    if not any(term in hay for term in _EA_POLICY_TERMS):
+        return False
+    if any(bad in hay for bad in ("supply", "equipment", "construction", "works supervision")):
+        return False
+    return True
 
 
 def _empty_result(enable_date_filtering: bool, error: str = "") -> Dict[str, Any]:
@@ -79,8 +108,24 @@ async def run_simple_pipeline(
         f"[PIPELINE] .... │ markdown {len(md_source):,} chars | llm={active_llm_label()}"
     )
 
-    struct_agent = ListingStructureAgent()
-    rows = await struct_agent.structure_listing(md_source, page_url)
+    structured_rows = []
+    if crawl_artifact is not None and isinstance(crawl_artifact.metadata, dict):
+        structured_rows = crawl_artifact.metadata.get("listing_rows_v1") or []
+
+    if structured_rows:
+        rows = []
+        for row in structured_rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                rows.append(ListingRowV1(**row))
+            except Exception as exc:
+                logger.debug("Simple pipeline: skipped invalid structured row: %s", exc)
+        pipeline_tty(f"[AGENT1] .... ✓ {len(rows)} structured source row(s)")
+        logger.info("Simple pipeline: using %s structured source row(s)", len(rows))
+    else:
+        struct_agent = ListingStructureAgent()
+        rows = await struct_agent.structure_listing(md_source, page_url)
     all_tenders = listing_rows_to_tender_dicts(rows, page_url)
 
     if not all_tenders:
@@ -101,7 +146,10 @@ async def run_simple_pipeline(
         f"[PIPELINE] .... │ rows {len(all_tenders)} | expiry dropped {expiry_dropped}"
     )
 
-    pipeline_tty(f"[PIPELINE] .... ↓ checklist screening | {len(all_tenders)} row(s)")
+    if structured_rows:
+        pipeline_tty(f"[PIPELINE] .... ↓ checklist screening (structured source) | {len(all_tenders)} row(s)")
+    else:
+        pipeline_tty(f"[PIPELINE] .... ↓ checklist screening | {len(all_tenders)} row(s)")
     screened_tenders = await TenderScreeningAgent().screen_items(all_tenders)
     if screened_tenders:
         all_tenders = [
@@ -109,6 +157,19 @@ async def run_simple_pipeline(
             for tender in screened_tenders
             if bool((tender.get("screening") or {}).get("passes_filter"))
         ]
+        for tender in screened_tenders:
+            if bool((tender.get("screening") or {}).get("passes_filter")):
+                continue
+            if _is_ea_policy_advisory_allowance(tender):
+                screening = tender.setdefault("screening", {})
+                step1 = screening.setdefault("step1", {})
+                step1["mission_alignment"] = True
+                step1["sector_relevance"] = True
+                step1["activity_fit"] = True
+                if "yes_count" not in screening or int(screening.get("yes_count") or 0) < 3:
+                    screening["yes_count"] = max(3, int(screening.get("yes_count") or 0))
+                screening["passes_filter"] = True
+                all_tenders.append(tender)
     else:
         all_tenders = []
     pipeline_tty(

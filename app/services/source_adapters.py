@@ -74,6 +74,18 @@ SOURCE_CONFIGS: Dict[str, SourceConfig] = {
         base_url="https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/home",
         requires_auth=False,
     ),
+    "eu_funding": SourceConfig(
+        source_id="eu_funding",
+        display_name="EU Funding & Tenders API",
+        base_url="https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/opportunities/calls-for-tenders",
+        requires_auth=False,
+    ),
+    "un_careers": SourceConfig(
+        source_id="un_careers",
+        display_name="UN Careers consultant opportunities",
+        base_url="https://careers.un.org/jobopening",
+        requires_auth=False,
+    ),
     "usaid": SourceConfig(
         source_id="usaid",
         display_name="USAID",

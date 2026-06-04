@@ -44,6 +44,16 @@ async def harvest_for_page(page: MonitoredPage) -> HarvestResult:
     url = page.url
     raw = (page.crawl_strategy or "crawl4ai").strip().lower()
 
+    if raw == "un_careers":
+        from app.crawl.un_careers import harvest_un_careers
+
+        return await harvest_un_careers(page)
+
+    if raw == "eu_funding":
+        from app.crawl.eu_funding import harvest_eu_funding
+
+        return await harvest_eu_funding(page)
+
     if raw == "crawl4ai":
         from app.services.scraper import TenderScraper
 
