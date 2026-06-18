@@ -45,6 +45,7 @@ yarn-error.log*
 
 # Database backups (created by app/services/db_backup.py)
 /backups/
+/backups_secondary/
 
 # IDE
 .vscode/

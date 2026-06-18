@@ -18,6 +18,7 @@ from app.core.config import settings
 from app.services.crawl_schedule import schedule_description, uses_weekday_schedule
 from app.core.database import create_tables
 from app.core.init_data import ensure_default_screening_keywords
+from app.services.db_backup import auto_restore_live_db_from_latest_backup_if_needed
 from app.services.scheduler import TenderScheduler
 from app.api.main import api_router
 from app.auth.deps import require_analyst_or_above
@@ -34,6 +35,14 @@ async def lifespan(app: FastAPI):
     global scheduler
     
     logger.info(f"Starting {settings.APP_NAME}...")
+
+    # Safety: if DB is missing/corrupted, restore latest backup before schema init.
+    restore_result = auto_restore_live_db_from_latest_backup_if_needed()
+    if restore_result.get("restored"):
+        logger.warning(
+            "Database auto-restored on startup from backup: %s",
+            restore_result.get("from_backup"),
+        )
 
     # Always ensure DB schema exists, even when app is started directly
     # via `uvicorn app.main:app`.

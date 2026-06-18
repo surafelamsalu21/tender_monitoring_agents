@@ -22,7 +22,7 @@ from app.crawl.orchestrator import harvest_for_page
 from app.utils.listing_prep import dual_markdown_for_agent1_and_expiry
 from app.pipeline.crawl_artifact import crawl_artifact_from_harvest
 from app.pipeline.progress import pipeline_tty
-from app.services.db_backup import SCHEDULED_BACKUP_INTERVAL_HOURS, run_scheduled_backup
+from app.services.db_backup import run_scheduled_backup
 from app.services.crawl_schedule import (
     next_scheduled_crawl_utc,
     schedule_description,
@@ -57,7 +57,6 @@ class TenderScheduler:
         self.extraction_started_at: str | None = None
         self.last_extraction_at: str | None = None
         self.next_extraction_at: str | None = None
-        self.backup_task: Optional[asyncio.Task] = None
         self.last_backup_at: str | None = None
         self.last_backup_filename: str | None = None
         self.last_backup_error: str | None = None
@@ -93,14 +92,10 @@ class TenderScheduler:
 
         # Start periodic task
         self.task = asyncio.create_task(self._periodic_task())
-
-        # Start independent backup loop (skipped at runtime if BACKUP_ENABLED=False)
         if bool(getattr(settings, "BACKUP_ENABLED", True)):
-            self.backup_task = asyncio.create_task(self._periodic_backup())
             logger.info(
-                "Database backup scheduler started (every %sh, retention=%s)",
-                SCHEDULED_BACKUP_INTERVAL_HOURS,
-                getattr(settings, "BACKUP_RETENTION", 30),
+                "Database backup configured for post-extraction weekdays: %s",
+                getattr(settings, "BACKUP_AFTER_EXTRACTION_WEEKDAYS", "monday,thursday"),
             )
     
     async def stop(self):
@@ -112,43 +107,55 @@ class TenderScheduler:
                 await self.task
             except asyncio.CancelledError:
                 pass
-        if self.backup_task:
-            self.backup_task.cancel()
-            try:
-                await self.backup_task
-            except asyncio.CancelledError:
-                pass
         logger.info("Scheduler stopped")
 
-    async def _periodic_backup(self):
-        """Independent loop that takes a SQLite online backup every 24 hours."""
+    def _post_extraction_backup_weekday_indexes(self) -> set[int]:
+        """Return configured weekday indexes (Monday=0 ... Sunday=6) for post-run backups."""
+        raw = str(getattr(settings, "BACKUP_AFTER_EXTRACTION_WEEKDAYS", "monday,thursday") or "")
+        mapping = {
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
+        }
+        days: set[int] = set()
+        for part in raw.split(","):
+            key = part.strip().lower()
+            if key in mapping:
+                days.add(mapping[key])
+        # Safe fallback to requested default behavior.
+        return days or {0, 3}
+
+    async def _run_post_extraction_backup_if_due(self):
+        """Run a DB backup after extraction when today's weekday is configured."""
         from datetime import datetime, timezone
 
-        initial_delay = max(0, int(getattr(settings, "BACKUP_INITIAL_DELAY_SECONDS", 300) or 0))
-        interval_seconds = SCHEDULED_BACKUP_INTERVAL_HOURS * 3600
-
-        try:
-            await asyncio.sleep(initial_delay)
-        except asyncio.CancelledError:
+        if not bool(getattr(settings, "BACKUP_ENABLED", True)):
+            return
+        if not bool(getattr(settings, "BACKUP_AFTER_EXTRACTION_ENABLED", True)):
             return
 
-        while self.running:
-            try:
-                info = await asyncio.to_thread(run_scheduled_backup)
-                if info is not None:
-                    self.last_backup_at = datetime.now(timezone.utc).isoformat()
-                    self.last_backup_filename = info.filename
-                    self.last_backup_error = None
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.last_backup_error = str(e)
-                logger.error("Scheduled DB backup failed: %s", e)
+        now_utc = datetime.now(timezone.utc)
+        scheduled_days = self._post_extraction_backup_weekday_indexes()
+        if now_utc.weekday() not in scheduled_days:
+            return
 
-            try:
-                await asyncio.sleep(interval_seconds)
-            except asyncio.CancelledError:
-                break
+        try:
+            info = await asyncio.to_thread(run_scheduled_backup)
+            if info is not None:
+                self.last_backup_at = now_utc.isoformat()
+                self.last_backup_filename = info.filename
+                self.last_backup_error = None
+                logger.info(
+                    "Post-extraction DB backup completed: %s",
+                    info.filename,
+                )
+        except Exception as e:
+            self.last_backup_error = str(e)
+            logger.error("Post-extraction DB backup failed: %s", e)
     
     async def _periodic_task(self):
         """Run extraction on configured weekdays (or fixed interval fallback)."""
@@ -238,6 +245,7 @@ class TenderScheduler:
             self.extraction_in_progress = False
             self.extraction_started_at = None
             self.last_extraction_at = datetime.now(timezone.utc).isoformat()
+            await self._run_post_extraction_backup_if_due()
     
     async def _process_page_extended_pipeline(
         self, db: Session, page: MonitoredPage, force: bool = False

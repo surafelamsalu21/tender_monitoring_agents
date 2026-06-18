@@ -35,10 +35,23 @@ class Settings(BaseSettings):
     # Database backups (SQLite only)
     BACKUP_ENABLED: bool = Field(default=True, env="BACKUP_ENABLED")
     BACKUP_DIR: str = Field(default="backups", env="BACKUP_DIR")
+    BACKUP_DIR_SECONDARY: str = Field(
+        default="backups_secondary", env="BACKUP_DIR_SECONDARY"
+    )
     BACKUP_RETENTION: int = Field(default=30, env="BACKUP_RETENTION")
-    # Delay before the first backup runs after startup (avoids contention with init).
-    BACKUP_INITIAL_DELAY_SECONDS: int = Field(
-        default=300, env="BACKUP_INITIAL_DELAY_SECONDS")
+    # Run backup after extraction if today's weekday is in this list.
+    # Defaults align with your crawl schedule: monday,thursday.
+    BACKUP_AFTER_EXTRACTION_ENABLED: bool = Field(
+        default=True, env="BACKUP_AFTER_EXTRACTION_ENABLED"
+    )
+    BACKUP_AFTER_EXTRACTION_WEEKDAYS: str = Field(
+        default="monday,thursday", env="BACKUP_AFTER_EXTRACTION_WEEKDAYS"
+    )
+    # On startup, if the live SQLite DB is missing/invalid, restore latest backup first.
+    # Set false only when you explicitly want a fresh empty DB.
+    BACKUP_AUTO_RESTORE_ON_STARTUP: bool = Field(
+        default=True, env="BACKUP_AUTO_RESTORE_ON_STARTUP"
+    )
 
     # LLM Provider
     LLM_PROVIDER: str = Field(default="anthropic", env="LLM_PROVIDER")

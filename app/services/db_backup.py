@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,9 +23,6 @@ from sqlalchemy.engine.url import make_url
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-
-SCHEDULED_BACKUP_INTERVAL_HOURS = 24
-
 
 @dataclass
 class BackupFile:
@@ -64,6 +62,21 @@ def get_backup_dir() -> Path:
     return p
 
 
+def get_secondary_backup_dir() -> Path:
+    """Resolve the secondary backup directory and ensure it exists."""
+    raw = (getattr(settings, "BACKUP_DIR_SECONDARY", None) or "backups_secondary").strip()
+    p = Path(raw)
+    if not p.is_absolute():
+        p = (_project_root() / p).resolve()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def get_live_sqlite_path() -> Optional[Path]:
+    """Public helper for the live SQLite path; None for non-SQLite URLs."""
+    return _live_sqlite_path()
+
+
 def _live_sqlite_path() -> Optional[Path]:
     """Resolve the live SQLite database file path. Returns None for non-SQLite."""
     url = settings.DATABASE_URL or ""
@@ -85,6 +98,136 @@ def _live_sqlite_path() -> Optional[Path]:
 def _safe_filename(prefix: str = "tender_monitoring") -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     return f"{prefix}_{ts}.db"
+
+
+def _sqlite_has_application_tables(path: Path) -> bool:
+    """Return True when a SQLite file is readable and contains app tables."""
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+    conn: Optional[sqlite3.Connection] = None
+    try:
+        conn = sqlite3.connect(str(path), timeout=10)
+        cur = conn.cursor()
+        row = cur.execute(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchone()
+        return bool(row and int(row[0]) > 0)
+    except Exception:
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _latest_backup_across_dirs() -> Optional[BackupFile]:
+    """Pick newest backup from primary and secondary directories."""
+    candidates: List[BackupFile] = []
+    for backup_dir in (get_backup_dir(), get_secondary_backup_dir()):
+        for p in backup_dir.iterdir():
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in (".db", ".sqlite", ".sqlite3"):
+                continue
+            if p.name.endswith(".tmp"):
+                continue
+            try:
+                stat = p.stat()
+            except OSError:
+                continue
+            candidates.append(
+                BackupFile(
+                    filename=p.name,
+                    size_bytes=stat.st_size,
+                    created_at=datetime.fromtimestamp(
+                        stat.st_mtime, tz=timezone.utc
+                    ).isoformat().replace("+00:00", "Z"),
+                    path=str(p.resolve()),
+                )
+            )
+    if not candidates:
+        return None
+    candidates.sort(key=lambda b: b.created_at, reverse=True)
+    return candidates[0]
+
+
+def auto_restore_live_db_from_latest_backup_if_needed() -> dict:
+    """
+    Startup safety: when live SQLite DB is missing/empty/invalid, restore newest backup.
+    Returns a status dict for logs/diagnostics.
+    """
+    if not bool(getattr(settings, "BACKUP_AUTO_RESTORE_ON_STARTUP", True)):
+        return {"checked": False, "restored": False, "reason": "disabled"}
+
+    live = _live_sqlite_path()
+    if live is None:
+        return {"checked": False, "restored": False, "reason": "non_sqlite"}
+
+    # Healthy DB already present -> keep it untouched.
+    if _sqlite_has_application_tables(live):
+        return {"checked": True, "restored": False, "reason": "live_db_ok", "live_path": str(live)}
+
+    latest = _latest_backup_across_dirs()
+    if latest is None:
+        return {
+            "checked": True,
+            "restored": False,
+            "reason": "no_backups_found",
+            "live_path": str(live),
+        }
+
+    src = Path(latest.path)
+    live.parent.mkdir(parents=True, exist_ok=True)
+
+    # Remove stale WAL/SHM if they exist near target.
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(live) + suffix)
+        if sidecar.exists():
+            try:
+                sidecar.unlink()
+            except OSError:
+                pass
+
+    # Use SQLite backup API for restore as well (avoids bind-mount replace/busy issues).
+    src_conn: Optional[sqlite3.Connection] = None
+    dst_conn: Optional[sqlite3.Connection] = None
+    try:
+        src_conn = sqlite3.connect(str(src), timeout=30)
+        dst_conn = sqlite3.connect(str(live), timeout=30)
+        with dst_conn:
+            src_conn.backup(dst_conn, pages=-1, progress=None)
+    finally:
+        if dst_conn is not None:
+            try:
+                dst_conn.close()
+            except Exception:
+                pass
+        if src_conn is not None:
+            try:
+                src_conn.close()
+            except Exception:
+                pass
+
+    if not _sqlite_has_application_tables(live):
+        raise RuntimeError(
+            f"Auto-restore copied {src} but restored DB still looks invalid: {live}"
+        )
+
+    logger.warning(
+        "Live DB auto-restored from latest backup: %s -> %s",
+        src,
+        live,
+    )
+    return {
+        "checked": True,
+        "restored": True,
+        "reason": "restored_from_backup",
+        "from_backup": str(src),
+        "live_path": str(live),
+    }
 
 
 def backup_database(target_path: Optional[Path] = None) -> BackupFile:
@@ -147,6 +290,13 @@ def backup_database(target_path: Optional[Path] = None) -> BackupFile:
         "DB backup written: %s (%s) from %s",
         info.filename, _human_size(size), live,
     )
+
+    # Always mirror the backup to a second folder so two copies are kept.
+    secondary_dir = get_secondary_backup_dir()
+    secondary_target = (secondary_dir / target_path.name).resolve()
+    shutil.copy2(target_path, secondary_target)
+    logger.info("DB backup mirrored to secondary folder: %s", secondary_target)
+
     return info
 
 
@@ -186,18 +336,44 @@ def prune_old_backups(retention: Optional[int] = None) -> int:
     )
     keep = max(1, keep)
 
-    items = list_backups()
-    if len(items) <= keep:
-        return 0
-
     deleted = 0
-    for item in items[keep:]:
-        try:
-            Path(item.path).unlink()
-            deleted += 1
-            logger.info("Pruned old backup: %s", item.filename)
-        except OSError as e:
-            logger.warning("Failed to prune %s: %s", item.filename, e)
+
+    # Apply retention independently to both backup folders.
+    for backup_dir in (get_backup_dir(), get_secondary_backup_dir()):
+        items: List[BackupFile] = []
+        for p in backup_dir.iterdir():
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in (".db", ".sqlite", ".sqlite3"):
+                continue
+            if p.name.endswith(".tmp"):
+                continue
+            try:
+                stat = p.stat()
+            except OSError:
+                continue
+            items.append(
+                BackupFile(
+                    filename=p.name,
+                    size_bytes=stat.st_size,
+                    created_at=datetime.fromtimestamp(
+                        stat.st_mtime, tz=timezone.utc
+                    ).isoformat().replace("+00:00", "Z"),
+                    path=str(p.resolve()),
+                )
+            )
+        items.sort(key=lambda b: b.created_at, reverse=True)
+
+        if len(items) <= keep:
+            continue
+
+        for item in items[keep:]:
+            try:
+                Path(item.path).unlink()
+                deleted += 1
+                logger.info("Pruned old backup (%s): %s", backup_dir.name, item.filename)
+            except OSError as e:
+                logger.warning("Failed to prune %s from %s: %s", item.filename, backup_dir, e)
     return deleted
 
 
@@ -238,12 +414,51 @@ def get_backup_status() -> dict:
     items = list_backups()
     latest = items[0] if items else None
     backup_dir = get_backup_dir()
+    secondary_backup_dir = get_secondary_backup_dir()
+
+    secondary_items: List[BackupFile] = []
+    for p in secondary_backup_dir.iterdir():
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in (".db", ".sqlite", ".sqlite3"):
+            continue
+        if p.name.endswith(".tmp"):
+            continue
+        try:
+            stat = p.stat()
+        except OSError:
+            continue
+        secondary_items.append(
+            BackupFile(
+                filename=p.name,
+                size_bytes=stat.st_size,
+                created_at=datetime.fromtimestamp(
+                    stat.st_mtime, tz=timezone.utc
+                ).isoformat().replace("+00:00", "Z"),
+                path=str(p.resolve()),
+            )
+        )
+    secondary_items.sort(key=lambda b: b.created_at, reverse=True)
+    secondary_latest = secondary_items[0] if secondary_items else None
+
     return {
         "enabled": bool(getattr(settings, "BACKUP_ENABLED", True)),
-        "interval_hours": SCHEDULED_BACKUP_INTERVAL_HOURS,
+        # Kept for backward compatibility with existing frontend typings.
+        "interval_hours": 0,
+        "trigger": "post_extraction_weekdays",
+        "post_extraction_enabled": bool(
+            getattr(settings, "BACKUP_AFTER_EXTRACTION_ENABLED", True)
+        ),
+        "schedule_weekdays": str(
+            getattr(settings, "BACKUP_AFTER_EXTRACTION_WEEKDAYS", "monday,thursday")
+        ),
         "retention": int(getattr(settings, "BACKUP_RETENTION", 30) or 30),
         "directory": str(backup_dir),
         "count": len(items),
         "total_bytes": sum(i.size_bytes for i in items),
         "latest": latest.to_dict() if latest else None,
+        "secondary_directory": str(secondary_backup_dir),
+        "secondary_count": len(secondary_items),
+        "secondary_total_bytes": sum(i.size_bytes for i in secondary_items),
+        "secondary_latest": secondary_latest.to_dict() if secondary_latest else None,
     }
