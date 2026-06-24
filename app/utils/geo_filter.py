@@ -26,6 +26,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -217,3 +218,63 @@ def _title_has_allowed_token(title_lower: str) -> bool:
         if token in title_lower:
             return True
     return False
+
+
+def required_country_from_page_url(page_url: str) -> str | None:
+    """
+    Extract a strict country override encoded in a monitored page URL.
+
+    Only the AfDB-specific ``afdb_country`` key is honoured (in either the query
+    string or the URL fragment) so this never accidentally affects other sources
+    that happen to use a generic ``country`` query parameter.
+
+    Example:
+        https://www.afdb.org/en/projects-and-operations/procurement?afdb_country=ethiopia
+        https://www.afdb.org/en/projects-and-operations/procurement#afdb_country=ethiopia
+    """
+    raw_url = (page_url or "").strip()
+    if not raw_url:
+        return None
+
+    parsed = urlparse(raw_url)
+    params = parse_qs(parsed.query)
+    raw = ((params.get("afdb_country") or [""])[0]).strip().lower()
+    if not raw:
+        frag_params = parse_qs((parsed.fragment or "").lstrip("#"))
+        raw = ((frag_params.get("afdb_country") or [""])[0]).strip().lower()
+    return raw or None
+
+
+def is_specific_country_allowed(
+    required_country: str,
+    country: str,
+    title: str = "",
+    description: str = "",
+) -> bool:
+    """
+    Strict country gate for sources where URL-level filter state is encoded.
+
+    This is intentionally conservative: if strict country is set, only notices
+    with clear evidence of that country are accepted.
+    """
+    wanted = (required_country or "").strip().lower()
+    if not wanted:
+        return True
+
+    country_n = (country or "").lower()
+    title_n = (title or "").lower()
+    desc_n = (description or "").lower()[:500]
+    hay = f"{country_n}\n{title_n}\n{desc_n}"
+
+    if wanted == "ethiopia":
+        # Explicit country field takes precedence.
+        if country_n and country_n not in _AMBIGUOUS_VALUES:
+            # Keep multinational rows when Ethiopia is explicitly included in
+            # title/description; otherwise require Ethiopia in country field.
+            if "multinational" in country_n:
+                return any(token in hay for token in ("ethiopia", "ethiopian", "addis ababa"))
+            if not any(token in country_n for token in ("ethiopia", "ethiopian")):
+                return False
+        return any(token in hay for token in ("ethiopia", "ethiopian", "addis ababa"))
+
+    return wanted in hay

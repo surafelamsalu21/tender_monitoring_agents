@@ -14,6 +14,7 @@ from .agent3 import EmailComposerAgent
 from app.models import Keyword
 from app.core.config import settings
 from app.utils.tender_deadline_gate import filter_expired_agent1_items
+from app.utils.geo_filter import required_country_from_page_url
 from app.pipeline.schemas import CrawlArtifactV1
 from app.pipeline.progress import pipeline_tty, active_llm_label
 
@@ -186,7 +187,15 @@ class TenderAgent:
             )
 
             expiry_dropped = 0
-            if settings.SKIP_EXPIRED_AFTER_AGENT1 and all_tenders:
+            # AfDB strict-country (RSS fallback) rows only carry a *publication*
+            # date, not a closing deadline, so the expiry gate would wrongly drop
+            # them. Skip the deadline gate for that source.
+            page_url_for_expiry = state.get("page_url") or ""
+            skip_expiry_gate = bool(
+                required_country_from_page_url(page_url_for_expiry)
+                and "afdb.org" in page_url_for_expiry.lower()
+            )
+            if settings.SKIP_EXPIRED_AFTER_AGENT1 and all_tenders and not skip_expiry_gate:
                 all_tenders, expiry_dropped = filter_expired_agent1_items(
                     all_tenders,
                     state["listing_markdown_for_expiry"],

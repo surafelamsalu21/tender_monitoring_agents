@@ -45,7 +45,7 @@ class Settings(BaseSettings):
         default=True, env="BACKUP_AFTER_EXTRACTION_ENABLED"
     )
     BACKUP_AFTER_EXTRACTION_WEEKDAYS: str = Field(
-        default="monday,thursday", env="BACKUP_AFTER_EXTRACTION_WEEKDAYS"
+        default="monday,wednesday,friday", env="BACKUP_AFTER_EXTRACTION_WEEKDAYS"
     )
     # On startup, if the live SQLite DB is missing/invalid, restore latest backup first.
     # Set false only when you explicitly want a fresh empty DB.
@@ -127,9 +127,9 @@ class Settings(BaseSettings):
 
     # Crawling Configuration
     # Weekday schedule: automatic full extraction on listed days only (skips weekends when unset).
-    # Example: monday,thursday → ~every 3 days, Mon + Thu only.
+    # Example: monday,wednesday,friday → 3 runs per week, no weekends.
     CRAWL_SCHEDULE_WEEKDAYS: str = Field(
-        default="monday,thursday", env="CRAWL_SCHEDULE_WEEKDAYS"
+        default="monday,wednesday,friday", env="CRAWL_SCHEDULE_WEEKDAYS"
     )
     CRAWL_SCHEDULE_TIME: str = Field(default="09:00", env="CRAWL_SCHEDULE_TIME")
     CRAWL_SCHEDULE_TIMEZONE: str = Field(

@@ -13,7 +13,11 @@ from app.pipeline.agent1_structure import ListingStructureAgent
 from app.pipeline.legacy_adapter import listing_rows_to_tender_dicts
 from app.pipeline.progress import active_llm_label, pipeline_tty
 from app.pipeline.schemas import CrawlArtifactV1, ListingRowV1
-from app.utils.geo_filter import is_geography_allowed
+from app.utils.geo_filter import (
+    is_geography_allowed,
+    is_specific_country_allowed,
+    required_country_from_page_url,
+)
 from app.utils.tender_deadline_gate import filter_expired_agent1_items
 
 logger = logging.getLogger(__name__)
@@ -98,6 +102,7 @@ async def run_simple_pipeline(
     - Duplicate check + DB1/DB2 + Agent 2/3 reuse existing modules.
     """
     md_source = (crawl_artifact.markdown if crawl_artifact is not None else None) or page_content
+    strict_country = required_country_from_page_url(page_url or "")
     if not (md_source or "").strip():
         return _empty_result(enable_date_filtering, "No markdown content from crawl")
 
@@ -137,7 +142,10 @@ async def run_simple_pipeline(
 
     expiry_dropped = 0
     ex_src = listing_markdown_for_expiry if listing_markdown_for_expiry.strip() else md_source
-    if settings.SKIP_EXPIRED_AFTER_AGENT1:
+    # AfDB strict-country (RSS fallback) rows only carry a publication date,
+    # not a closing deadline, so skip the expiry gate for that source.
+    skip_expiry_gate = bool(strict_country and "afdb.org" in (page_url or "").lower())
+    if settings.SKIP_EXPIRED_AFTER_AGENT1 and not skip_expiry_gate:
         all_tenders, expiry_dropped = filter_expired_agent1_items(all_tenders, ex_src)
         if expiry_dropped:
             logger.info("Simple pipeline: expiry gate dropped %s row(s)", expiry_dropped)
@@ -195,6 +203,28 @@ async def run_simple_pipeline(
                 f"[PIPELINE] .... │ geo hard-gate dropped {geo_dropped} non-EA tender(s)"
             )
             logger.info("Simple pipeline: geo hard-gate dropped %s tender(s)", geo_dropped)
+
+    if all_tenders and strict_country:
+        strict_before = len(all_tenders)
+        all_tenders = [
+            tender for tender in all_tenders
+            if is_specific_country_allowed(
+                strict_country,
+                (tender.get("screening") or {}).get("step3", {}).get("country", ""),
+                title=tender.get("title", ""),
+                description=tender.get("description", ""),
+            )
+        ]
+        strict_dropped = strict_before - len(all_tenders)
+        if strict_dropped:
+            pipeline_tty(
+                f"[PIPELINE] .... │ strict country gate ({strict_country}) dropped {strict_dropped} tender(s)"
+            )
+            logger.info(
+                "Simple pipeline: strict country=%s dropped %s tender(s)",
+                strict_country,
+                strict_dropped,
+            )
 
     # Mission alignment mandatory gate.
     # Tenders not about economic development of firms/farms/industries are

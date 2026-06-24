@@ -14,7 +14,9 @@ import asyncio
 import json
 import logging
 import os
+import xml.etree.ElementTree as ET
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
 from app.core.config import settings
@@ -96,6 +98,252 @@ async def _apply_undp_region_filter(page, listing_url: str) -> str | None:
         await page.wait_for_timeout(500)
         return region_id
     return None
+
+
+def _afdb_country_filter_value(listing_url: str) -> str | None:
+    """
+    Support URLs like:
+      https://www.afdb.org/en/projects-and-operations/procurement?afdb_country=ethiopia
+
+    The AfDB listing applies country via in-page form controls (URL usually stays
+    unchanged). This helper lets us encode a target country in the monitored URL.
+    """
+    parsed = urlparse(listing_url)
+    host = parsed.netloc.lower()
+    if "afdb.org" not in host:
+        return None
+    if "/projects-and-operations/procurement" not in parsed.path.lower():
+        return None
+
+    params = parse_qs(parsed.query)
+    raw = ((params.get("afdb_country") or params.get("country") or [""])[0]).strip()
+    if not raw:
+        frag_params = parse_qs((parsed.fragment or "").lstrip("#"))
+        raw = ((frag_params.get("afdb_country") or frag_params.get("country") or [""])[0]).strip()
+    return raw or None
+
+
+async def _apply_afdb_country_filter(page, listing_url: str) -> str | None:
+    country = _afdb_country_filter_value(listing_url)
+    if not country:
+        return None
+
+    applied = await page.evaluate(
+        """(countryName) => {
+            const wanted = String(countryName || '').trim().toLowerCase();
+            if (!wanted) return null;
+
+            const allSelects = Array.from(document.querySelectorAll('select'));
+            if (!allSelects.length) return null;
+
+            const chooseOption = (selectEl) => {
+                const options = Array.from(selectEl.options || []);
+                let opt = options.find((o) => (o.textContent || '').trim().toLowerCase() === wanted);
+                if (!opt) {
+                    opt = options.find((o) => (o.value || '').trim().toLowerCase() === wanted);
+                }
+                if (!opt) {
+                    opt = options.find((o) => (o.textContent || '').toLowerCase().includes(wanted));
+                }
+                return opt || null;
+            };
+
+            // Prefer a select associated with a "Country" label.
+            let targetSelect = null;
+            const labels = Array.from(document.querySelectorAll('label'));
+            for (const label of labels) {
+                const txt = (label.textContent || '').trim().toLowerCase();
+                if (!txt.includes('country')) continue;
+                const forId = label.getAttribute('for');
+                if (forId) {
+                    const byId = document.getElementById(forId);
+                    if (byId && byId.tagName && byId.tagName.toLowerCase() === 'select') {
+                        targetSelect = byId;
+                        break;
+                    }
+                }
+                const nested = label.querySelector('select');
+                if (nested) {
+                    targetSelect = nested;
+                    break;
+                }
+            }
+
+            // Fallback: pick a select that contains a matching option.
+            if (!targetSelect) {
+                targetSelect = allSelects.find((s) => !!chooseOption(s)) || null;
+            }
+            if (!targetSelect) return null;
+
+            const option = chooseOption(targetSelect);
+            if (!option) return null;
+
+            targetSelect.value = option.value;
+            targetSelect.dispatchEvent(new Event('input', { bubbles: true }));
+            targetSelect.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const applyCandidates = Array.from(
+                document.querySelectorAll('button, input[type="submit"], input[type="button"]')
+            );
+            const applyBtn = applyCandidates.find((el) => {
+                const txt = (
+                    el.tagName.toLowerCase() === 'input'
+                        ? (el.getAttribute('value') || '')
+                        : (el.textContent || '')
+                ).trim().toLowerCase();
+                return txt === 'apply' || txt.includes('apply');
+            });
+            if (applyBtn) {
+                applyBtn.click();
+            }
+
+            return (option.textContent || '').trim() || countryName;
+        }""",
+        country,
+    )
+
+    if applied:
+        # Give the listing widget a moment to refresh after submit.
+        await page.wait_for_timeout(1200)
+        return str(applied)
+    return None
+
+
+def _is_afdb_procurement_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    return "afdb.org" in parsed.netloc.lower() and "/projects-and-operations/procurement" in parsed.path.lower()
+
+
+def _afdb_navigation_url(listing_url: str) -> str:
+    """
+    Remove local-only control params before loading AfDB.
+
+    AfDB may propagate unknown query params (like `afdb_country`) into its AJAX
+    endpoint and return 403. We keep the country hint for local automation but
+    navigate using a clean URL.
+    """
+    if not _is_afdb_procurement_url(listing_url):
+        return listing_url
+    parsed = urlparse(listing_url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params.pop("afdb_country", None)
+    clean_q = urlencode([(k, v) for k, vals in params.items() for v in vals])
+    return urlunparse((
+        parsed.scheme, parsed.netloc, parsed.path,
+        parsed.params, clean_q, parsed.fragment,
+    ))
+
+
+def _max_pages_for_listing_url(listing_url: str) -> int:
+    """
+    Source-aware pagination budget.
+    - AfDB procurement: force up to 6 pages (user request).
+    - Others: keep existing global default behavior.
+    """
+    configured = int(getattr(settings, "PLAYWRIGHT_MAX_PAGES", 4) or 4)
+    if _is_afdb_procurement_url(listing_url):
+        return max(1, min(max(configured, 6), 6))
+    return max(1, min(configured, 4))
+
+
+def _looks_like_cloudflare_challenge(text: str, html: str) -> bool:
+    low = f"{text}\n{html}".lower()
+    return (
+        "just a moment" in low
+        or "enable javascript and cookies to continue" in low
+        or "/cdn-cgi/challenge-platform/" in low
+        or "__cf_chl_" in low
+    )
+
+
+def _afdb_rss_fetch_page(page: int | None) -> bytes:
+    """Fetch one page of the AfDB procurement RSS feed (page=None → base feed)."""
+    rss_url = "https://www.afdb.org/en/projects-and-operations/procurement.xml"
+    if page is not None:
+        rss_url += f"?page={page}"
+    req = Request(
+        rss_url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+            )
+        },
+    )
+    with urlopen(req, timeout=45) as resp:
+        return resp.read()
+
+
+def _afdb_rss_fallback_sync(
+    required_country: str | None,
+    max_pages: int = 1,
+) -> tuple[str, list[str], str, int]:
+    """
+    Fallback for AfDB procurement when browser capture is empty/challenge-like.
+    Uses official RSS feed (paginated via ?page=N) and applies an optional
+    country keyword filter. Aggregates and de-duplicates across pages.
+    """
+    pages = max(1, min(int(max_pages or 1), 6))
+    wanted = (required_country or "").strip().lower()
+
+    rows: list[str] = []
+    links: list[str] = []
+    seen_links: set[str] = set()
+    xml_first = ""
+    kept = 0
+
+    # page=None is the base feed; subsequent paged URLs use ?page=1..N-1
+    page_params: list[int | None] = [None] + list(range(1, pages))
+    for idx, page in enumerate(page_params):
+        try:
+            raw = _afdb_rss_fetch_page(page)
+        except Exception as exc:
+            logger.warning("AfDB RSS page=%s fetch failed: %s", page, exc)
+            continue
+        if idx == 0:
+            xml_first = raw.decode("utf-8", errors="replace")
+        try:
+            root = ET.fromstring(raw)
+        except Exception as exc:
+            logger.warning("AfDB RSS page=%s parse failed: %s", page, exc)
+            continue
+
+        for item in root.findall(".//item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            pub = (item.findtext("pubDate") or "").strip()
+            desc = (item.findtext("description") or "").strip()
+
+            if link and link in seen_links:
+                continue
+
+            hay = f"{title}\n{desc}".lower()
+            if wanted and wanted not in hay:
+                continue
+
+            if link:
+                seen_links.add(link)
+            kept += 1
+            rows.append(f"- {title}\n  - Date: {pub}\n  - Link: {link}")
+            if link:
+                links.append(link)
+
+    xml_text = xml_first
+    body = (
+        "AfDB procurement RSS fallback (browser listing unavailable).\n\n"
+        f"Filter: {wanted or 'none'}\n"
+        f"Pages scanned: {pages}\n"
+        f"Matched notices: {kept}\n\n"
+        + "\n".join(rows[:300])
+    )
+    return body, list(dict.fromkeys(links)), xml_text, 1
+
+
+async def _afdb_rss_fallback(
+    required_country: str | None,
+    max_pages: int = 1,
+) -> tuple[str, list[str], str, int]:
+    return await asyncio.to_thread(_afdb_rss_fallback_sync, required_country, max_pages)
 
 
 def _is_ungm_url(url: str) -> bool:
@@ -406,7 +654,7 @@ async def _find_next_pagination_locator(page):
 
 
 async def _capture_paginated_listing(page, listing_url: str, wait_until: str) -> tuple[str, list[str], str, int]:
-    max_pages = max(1, min(int(getattr(settings, "PLAYWRIGHT_MAX_PAGES", 4) or 4), 4))
+    max_pages = _max_pages_for_listing_url(listing_url)
     parts: list[str] = []
     all_links: list[str] = []
     html_parts: list[str] = []
@@ -477,6 +725,7 @@ def _resolve_auth_selectors(monitored: MonitoredPage) -> dict[str, str]:
 async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestResult:
     """Browser work only (Playwright async). See `harvest_with_playwright` for entry."""
     listing_url = monitored.url
+    nav_url = _afdb_navigation_url(listing_url)
     login_url = getattr(monitored, "auth_login_url", None) or settings.PLAYWRIGHT_AUTH_LOGIN_URL
     user_env = getattr(monitored, "auth_username_env", None) or settings.PLAYWRIGHT_AUTH_USERNAME_ENV
     pass_env = getattr(monitored, "auth_password_env", None) or settings.PLAYWRIGHT_AUTH_PASSWORD_ENV
@@ -514,7 +763,7 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
                     await page.locator(selectors["submit"]).first.click()
                     await page.wait_for_load_state(wait_until)
 
-                max_p = max(1, min(int(getattr(settings, "PLAYWRIGHT_MAX_PAGES", 4) or 4), 4))
+                max_p = _max_pages_for_listing_url(listing_url)
 
                 if _is_ungm_url(listing_url):
                     # UNGM handler does its own goto with networkidle/load fallback.
@@ -533,22 +782,41 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
                     # then fall back to domcontentloaded for sites that never
                     # fire the "load" event.
                     try:
-                        await page.goto(listing_url, wait_until=wait_until, timeout=45_000)
+                        await page.goto(nav_url, wait_until=wait_until, timeout=45_000)
                     except Exception as goto_exc:
                         logger.info(
                             "Listing goto(%s) failed (%s); retrying with domcontentloaded.",
                             wait_until, goto_exc,
                         )
-                        await page.goto(
-                            listing_url, wait_until="domcontentloaded", timeout=45_000
-                        )
+                        await page.goto(nav_url, wait_until="domcontentloaded", timeout=45_000)
 
                     applied_filter = await _apply_undp_region_filter(page, listing_url)
+                    if not applied_filter:
+                        afdb_country = await _apply_afdb_country_filter(page, listing_url)
+                        if afdb_country:
+                            applied_filter = f"afdb_country:{afdb_country}"
                     text, links, html, pages_captured = await _capture_paginated_listing(
                         page,
                         listing_url,
                         wait_until,
                     )
+
+                    # AfDB can intermittently return Cloudflare challenge shells in
+                    # automation contexts. If capture is too small/challenge-like,
+                    # fall back to the official RSS feed.
+                    if _is_afdb_procurement_url(listing_url):
+                        country_hint = _afdb_country_filter_value(listing_url)
+                        if len((text or "").strip()) < 1200 or _looks_like_cloudflare_challenge(text, html):
+                            rss_pages = _max_pages_for_listing_url(listing_url)
+                            logger.warning(
+                                "AfDB browser capture looked incomplete/challenge-like; using RSS fallback (country=%s, pages=%s)",
+                                country_hint or "none", rss_pages,
+                            )
+                            text, links, html, pages_captured = await _afdb_rss_fallback(
+                                country_hint, rss_pages
+                            )
+                            if country_hint:
+                                applied_filter = f"afdb_country:{country_hint} (rss_fallback)"
             finally:
                 await browser.close()
     except Exception as e:
@@ -576,7 +844,7 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
             "link_count": len(links),
             "applied_filter": applied_filter,
             "pages_captured": pages_captured,
-            "max_pages": max(1, min(int(getattr(settings, "PLAYWRIGHT_MAX_PAGES", 4) or 4), 4)),
+            "max_pages": _max_pages_for_listing_url(listing_url),
         },
     )
 

@@ -24,7 +24,11 @@ from app.agents.screening_prompt import PRECISE_SCREENING_CHECKLIST_MARKDOWN
 from app.core.config import settings
 from app.core.llm_factory import get_chat_llm
 from app.pipeline.progress import pipeline_tty
-from app.utils.geo_filter import is_geography_allowed
+from app.utils.geo_filter import (
+    is_geography_allowed,
+    is_specific_country_allowed,
+    required_country_from_page_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +99,7 @@ class TenderExtractionAgent:
         merged = await TenderScreeningAgent().screen_items(
             listings, keyword_hints=keyword_hints
         )
-        return self._validate_and_enrich(merged)
+        return self._validate_and_enrich(merged, page_url=page_url)
 
     async def extract_and_screen_opportunities(
         self,
@@ -189,7 +193,7 @@ class TenderExtractionAgent:
             logger.info("Agent 1: extracted %d opportunities", len(opportunities))
 
             # Validate and enrich
-            validated = self._validate_and_enrich(opportunities)
+            validated = self._validate_and_enrich(opportunities, page_url=page_url)
 
             logger.info("Agent 1: validated %d opportunities", len(validated))
             return validated
@@ -428,9 +432,17 @@ Extract opportunities as a JSON array only."""
 
         return None
 
-    def _validate_and_enrich(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _validate_and_enrich(
+        self,
+        items: List[Dict[str, Any]],
+        page_url: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Validate and enrich opportunity data."""
         validated: List[Dict[str, Any]] = []
+        strict_country = required_country_from_page_url(page_url or "")
+        afdb_country_mode = bool(
+            strict_country and "afdb.org" in (page_url or "").lower()
+        )
 
         for item in items:
             # Required fields
@@ -445,8 +457,10 @@ Extract opportunities as a JSON array only."""
             # Get or create screening data
             screening = item.get("screening", {}) or {}
 
-            # Check unrelated flag
-            if screening.get("unrelated_to_precise_scope", False):
+            # Check unrelated flag.
+            # For AfDB strict-country mode, keep Ethiopia-matching listing rows even if
+            # the LLM marks them unrelated from sparse snippet context.
+            if not afdb_country_mode and screening.get("unrelated_to_precise_scope", False):
                 continue
 
             # Calculate yes_count from step1
@@ -454,11 +468,13 @@ Extract opportunities as a JSON array only."""
             yes_count = sum(1 for key in self.STEP1_KEYS if step1.get(key))
 
             # Keep only opportunities that pass the initial checklist threshold.
-            if yes_count < 3:
+            if yes_count < 3 and not afdb_country_mode:
                 continue
 
-            # Geography is a hard gate (allowed country list only).
-            if not bool(step1.get("geographic_fit")):
+            # Geography hard gate:
+            # - default mode: respect LLM geographic_fit boolean.
+            # - AfDB strict-country mode: rely on deterministic geo checks below.
+            if not afdb_country_mode and not bool(step1.get("geographic_fit")):
                 continue
 
             # Secondary hard geo gate: deterministic allowlist check to catch
@@ -474,34 +490,42 @@ Extract opportunities as a JSON array only."""
                 )
                 continue
 
-            # Mission alignment is a mandatory gate — mirrors geographic_fit.
-            # Tenders not about economic development of firms, farms, or industries
-            # (e.g. transport regulation, legal aid, governance, UNCT config,
-            # pure construction, media/comms, biodiversity without enterprise link)
-            # are outside Precise's scope even when geography is correct.
-            if not bool(step1.get("mission_alignment")):
+            if strict_country and not is_specific_country_allowed(
+                strict_country,
+                country_check,
+                title=title,
+                description=description,
+            ):
                 logger.info(
-                    "Agent 1 mission-align reject: title=%r", title[:80]
+                    "Agent 1 strict-country reject: required=%r country=%r title=%r",
+                    strict_country, country_check, title[:80],
                 )
                 continue
 
-            # Eligibility is a mandatory gate.
-            # "Individual Consultant / Individual Contractor" roles are restricted
-            # to individual persons — a consulting firm cannot apply.  These should
-            # be scored eligibility_quick_check=false by the LLM; this gate
-            # enforces the rejection in code as a safety net.
-            if not bool(step1.get("eligibility_quick_check")):
-                logger.info(
-                    "Agent 1 eligibility reject: title=%r", title[:80]
-                )
-                continue
+            # Mission alignment is mandatory in general, but AfDB strict-country mode
+            # intentionally keeps Ethiopia-targeted rows even if the LLM under-scores
+            # mission fit on short listing snippets.
+            if not afdb_country_mode:
+                if not bool(step1.get("mission_alignment")):
+                    logger.info(
+                        "Agent 1 mission-align reject: title=%r", title[:80]
+                    )
+                    continue
 
-            # Supply-only engagements are out of scope.
-            # Precise works on consulting, TA, BDS, research, capacity building —
-            # not on procurement/delivery of goods.
+            # Eligibility is mandatory in general; relaxed for AfDB strict-country
+            # mode because RSS/listing rows are terse and can be under-scored.
+            if not afdb_country_mode:
+                if not bool(step1.get("eligibility_quick_check")):
+                    logger.info(
+                        "Agent 1 eligibility reject: title=%r", title[:80]
+                    )
+                    continue
+
+            # Supply-only engagements are out of scope in general; relaxed for
+            # AfDB strict-country mode (user requested Ethiopia-inclusive capture).
             step2_check = screening.get("step2", {}) or {}
             signals = step2_check.get("strategic_signals", []) or []
-            if "engagement_supply_only" in signals:
+            if not afdb_country_mode and "engagement_supply_only" in signals:
                 logger.info(
                     "Agent 1 supply-only reject: title=%r", title[:80]
                 )
@@ -509,7 +533,10 @@ Extract opportunities as a JSON array only."""
 
             # Enrich screening data
             screening["yes_count"] = yes_count
-            screening["passes_filter"] = yes_count >= 3 and bool(step1.get("geographic_fit"))
+            if afdb_country_mode:
+                screening["passes_filter"] = True
+            else:
+                screening["passes_filter"] = yes_count >= 3 and bool(step1.get("geographic_fit"))
             screening["unrelated_to_precise_scope"] = False
             screening.setdefault("step2", {})
             screening.setdefault("step3", {})
