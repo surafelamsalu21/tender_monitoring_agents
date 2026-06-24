@@ -189,11 +189,20 @@ class TenderAgent:
             expiry_dropped = 0
             # AfDB strict-country (RSS fallback) rows only carry a *publication*
             # date, not a closing deadline, so the expiry gate would wrongly drop
-            # them. Skip the deadline gate for that source.
+            # them. World Bank procurement listing rows can have publication /
+            # contract dates without a usable deadline as well.
+            # Skip the deadline gate for those strict-scope sources.
             page_url_for_expiry = state.get("page_url") or ""
+            strict_scope = required_country_from_page_url(page_url_for_expiry)
             skip_expiry_gate = bool(
-                required_country_from_page_url(page_url_for_expiry)
-                and "afdb.org" in page_url_for_expiry.lower()
+                strict_scope
+                and (
+                    "afdb.org" in page_url_for_expiry.lower()
+                    or (
+                        strict_scope == "east_africa"
+                        and "worldbank.org" in page_url_for_expiry.lower()
+                    )
+                )
             )
             if settings.SKIP_EXPIRED_AFTER_AGENT1 and all_tenders and not skip_expiry_gate:
                 all_tenders, expiry_dropped = filter_expired_agent1_items(
@@ -205,6 +214,7 @@ class TenderAgent:
                         "Expiry gate: removed %s closed / past-deadline row(s) after Agent 1",
                         expiry_dropped,
                     )
+                    pipeline_tty(f"[AGENT1] · expiry gate dropped {expiry_dropped} row(s)")
 
             strong_matches = [
                 t for t in all_tenders

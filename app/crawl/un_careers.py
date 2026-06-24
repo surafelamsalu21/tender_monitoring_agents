@@ -20,6 +20,7 @@ _API_URL = "https://careers.un.org/api/public/opening/jo/list/filteredV2/en"
 _DETAIL_URL = "https://careers.un.org/jobSearchDescription/{job_id}?language=en"
 _DEFAULT_ITEM_PER_PAGE = 50
 _MAX_PAGES = 10
+_MIN_PAGE_ATTEMPTS = 2
 
 
 def _default_filter_config() -> dict[str, list[str]]:
@@ -164,13 +165,15 @@ async def harvest_un_careers(page: MonitoredPage) -> HarvestResult:
     filter_config = filter_config_from_url(source_url)
     all_rows: list[dict[str, Any]] = []
     detail_urls: list[str] = []
+    pages_fetched = 0
+    pages_budget = max(_MIN_PAGE_ATTEMPTS, _MAX_PAGES)
 
     async with httpx.AsyncClient(
         headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
         timeout=30.0,
         follow_redirects=True,
     ) as client:
-        for page_index in range(_MAX_PAGES):
+        for page_index in range(pages_budget):
             payload = {
                 "filterConfig": filter_config,
                 "pagination": {
@@ -183,6 +186,7 @@ async def harvest_un_careers(page: MonitoredPage) -> HarvestResult:
             response = await client.post(_API_URL, json=payload)
             response.raise_for_status()
             body = response.json()
+            pages_fetched += 1
             data = body.get("data") if isinstance(body, dict) else {}
             items = data.get("list") if isinstance(data, dict) else []
             if not isinstance(items, list) or not items:
@@ -197,9 +201,9 @@ async def harvest_un_careers(page: MonitoredPage) -> HarvestResult:
                     detail_urls.append(str(listing["detail_url"]))
 
             total_count = int(data.get("count") or data.get("totalCount") or 0) if isinstance(data, dict) else 0
-            if total_count and len(all_rows) >= total_count:
+            if total_count and len(all_rows) >= total_count and pages_fetched >= _MIN_PAGE_ATTEMPTS:
                 break
-            if len(items) < _DEFAULT_ITEM_PER_PAGE:
+            if len(items) < _DEFAULT_ITEM_PER_PAGE and pages_fetched >= _MIN_PAGE_ATTEMPTS:
                 break
 
     markdown = _markdown_from_rows(all_rows, source_url)
@@ -221,5 +225,8 @@ async def harvest_un_careers(page: MonitoredPage) -> HarvestResult:
                 {key: value for key, value in row.items() if key != "raw"} for row in all_rows
             ],
             "raw_count": len(all_rows),
+            "max_pages": pages_budget,
+            "pages_attempted": pages_fetched,
+            "min_page_attempts": _MIN_PAGE_ATTEMPTS,
         },
     )

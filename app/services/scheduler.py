@@ -328,6 +328,7 @@ class TenderScheduler:
             pipeline_tty(
                 f"[PIPELINE] · handoff | {len(harvest.markdown or ''):,} chars | "
                 f"links={len(harvest.listing_urls)} | pipeline={pipeline_mode}"
+                f"{' | pages=' + str((harvest.session_meta or {}).get('pages_captured') or (harvest.session_meta or {}).get('pages_attempted') or '?') + '/' + str((harvest.session_meta or {}).get('max_pages') or '?') if (harvest.session_meta or {}) else ''}"
                 f"{'→simple-forced' if force_simple_pipeline else ''}"
             )
 

@@ -22,6 +22,7 @@ _DETAIL_URL = (
 )
 _DEFAULT_PAGE_SIZE = 50
 _MAX_PAGES = 10
+_MIN_PAGE_ATTEMPTS = 2
 
 
 def _first(metadata: dict[str, Any], key: str) -> Any:
@@ -170,13 +171,15 @@ async def harvest_eu_funding(page: MonitoredPage) -> HarvestResult:
     page_size = max(1, min(page_size, 100))
     rows: list[dict[str, Any]] = []
     detail_urls: list[str] = []
+    pages_fetched = 0
+    pages_budget = max(_MIN_PAGE_ATTEMPTS, _MAX_PAGES)
 
     async with httpx.AsyncClient(
         headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
         timeout=30.0,
         follow_redirects=True,
     ) as client:
-        for offset in range(_MAX_PAGES):
+        for offset in range(pages_budget):
             body = await _search_eu_tenders(
                 client,
                 base_query,
@@ -184,6 +187,7 @@ async def harvest_eu_funding(page: MonitoredPage) -> HarvestResult:
                 page_size=page_size,
                 page_number=first_page + offset,
             )
+            pages_fetched += 1
             results = body.get("results") if isinstance(body.get("results"), list) else []
             if not results:
                 break
@@ -196,9 +200,9 @@ async def harvest_eu_funding(page: MonitoredPage) -> HarvestResult:
                     detail_urls.append(str(listing["detail_url"]))
 
             total = int(body.get("totalResults") or 0)
-            if total and len(rows) >= total:
+            if total and len(rows) >= total and pages_fetched >= _MIN_PAGE_ATTEMPTS:
                 break
-            if len(results) < page_size:
+            if len(results) < page_size and pages_fetched >= _MIN_PAGE_ATTEMPTS:
                 break
 
     markdown = _markdown_from_rows(rows, source_url)
@@ -219,5 +223,8 @@ async def harvest_eu_funding(page: MonitoredPage) -> HarvestResult:
                 {key: value for key, value in row.items() if key != "raw"} for row in rows
             ],
             "raw_count": len(rows),
+            "max_pages": pages_budget,
+            "pages_attempted": pages_fetched,
+            "min_page_attempts": _MIN_PAGE_ATTEMPTS,
         },
     )

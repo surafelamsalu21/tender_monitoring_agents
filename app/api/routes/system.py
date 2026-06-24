@@ -5,6 +5,7 @@ app/api/routes/system.py
 from typing import Dict, Any, List, Literal, Optional
 from datetime import datetime
 import logging
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -26,6 +27,7 @@ from app.pipeline.crawl_artifact import crawl_artifact_from_scraper_dict
 from app.core.config import settings
 
 router = APIRouter()
+_TEST_CRAWLER_PLAYWRIGHT_FALLBACK_HOSTS = {"egp.gov.et", "www.egp.gov.et"}
 
 
 def _force_simple_pipeline_for_page(page: MonitoredPage) -> bool:
@@ -439,12 +441,51 @@ async def test_crawler(request: TestCrawlerRequest):
             result = await scraper.scrape_page(url)
 
         if result['status'] == 'success':
+            markdown = result.get('markdown', '') or ''
+            links = _flatten_scrape_links(result.get('links'))
+            host = (urlparse(url).netloc or "").lower()
+            shell_like_capture = len(markdown.strip()) < 300 and len(links) == 0
+            if shell_like_capture and host in _TEST_CRAWLER_PLAYWRIGHT_FALLBACK_HOSTS:
+                logger.warning(
+                    "crawl4ai test looked shell-like for %s (chars=%s, links=%s); trying playwright fallback.",
+                    url,
+                    len(markdown),
+                    len(links),
+                )
+                from app.crawl.playwright_harvest import harvest_with_playwright
+
+                probe_page = MonitoredPage(
+                    name="System Test (playwright shell fallback)",
+                    url=url,
+                    crawl_strategy="playwright",
+                )
+                pw = await harvest_with_playwright(probe_page)
+                if pw.status == "success":
+                    markdown = pw.markdown or ""
+                    return {
+                        'status': 'success',
+                        'url': url,
+                        'title': '',
+                        'markdown': markdown,
+                        'html': pw.html or '',
+                        'links': pw.listing_urls or [],
+                        'media': [],
+                        'metadata': {
+                            **(pw.session_meta or {}),
+                            'strategy_used': 'playwright',
+                            'fallback_from': 'crawl4ai_shell_capture',
+                        },
+                        'word_count': len(markdown.split()),
+                        'char_count': len(markdown),
+                    }
+                logger.warning("Playwright shell fallback failed for %s: %s", url, pw.error)
+
             logger.info(f"Crawler test successful for {url} using crawl4ai")
             return {
                 'status': 'success',
                 'url': url,
                 'title': result.get('title', ''),
-                'markdown': result.get('markdown', ''),
+                'markdown': markdown,
                 'html': result.get('html', ''),
                 'links': result.get('links', []),
                 'media': result.get('media', []),
@@ -452,8 +493,8 @@ async def test_crawler(request: TestCrawlerRequest):
                     **(result.get('metadata', {}) or {}),
                     'strategy_used': 'crawl4ai',
                 },
-                'word_count': result.get('word_count', 0),
-                'char_count': result.get('char_count', 0)
+                'word_count': result.get('word_count', 0) or len(markdown.split()),
+                'char_count': result.get('char_count', 0) or len(markdown)
             }
 
         # Fallback: use Playwright for known dynamic pages or timeout-like failures.

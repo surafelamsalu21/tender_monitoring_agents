@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from hashlib import sha1
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from langchain_core.messages import HumanMessage
 
@@ -439,28 +441,83 @@ Extract opportunities as a JSON array only."""
     ) -> List[Dict[str, Any]]:
         """Validate and enrich opportunity data."""
         validated: List[Dict[str, Any]] = []
+        parsed_page = urlparse(page_url or "")
+        tma_procurement_mode = (
+            "trademarkafrica.com" in parsed_page.netloc.lower()
+            and "/procurement" in parsed_page.path.lower()
+        )
         strict_country = required_country_from_page_url(page_url or "")
         afdb_country_mode = bool(
             strict_country and "afdb.org" in (page_url or "").lower()
         )
+        worldbank_procurement_mode = bool(
+            strict_country and "worldbank.org" in (page_url or "").lower()
+        )
+        worldbank_region_mode = bool(
+            strict_country == "east_africa" and "worldbank.org" in (page_url or "").lower()
+        )
+        reject_stats: Dict[str, int] = {
+            "missing_required_fields": 0,
+            "award_notice_reject": 0,
+            "unrelated_scope": 0,
+            "yes_count_lt3": 0,
+            "geographic_fit_false": 0,
+            "geo_hard_reject": 0,
+            "strict_country_reject": 0,
+            "mission_reject": 0,
+            "eligibility_reject": 0,
+            "supply_only_reject": 0,
+            "kept": 0,
+        }
 
         for item in items:
             # Required fields
             title = str(item.get("title", "")).strip()
             url = str(item.get("url", "")).strip()
+            description = str(item.get("description", "")).strip()
+
+            # World Bank listing rows can lack direct detail links.
+            # Keep such rows with a stable synthetic URL so downstream stages
+            # can still persist and deduplicate them.
+            if not url and worldbank_region_mode and title:
+                digest_src = f"{title}|{description}|{strict_country}".encode("utf-8", "ignore")
+                digest = sha1(digest_src).hexdigest()[:12]
+                base_url = (page_url or "https://www.worldbank.org/en/projects-operations/procurement").strip()
+                url = f"{base_url}#wb-row-{digest}"
 
             if not title or not url:
+                reject_stats["missing_required_fields"] += 1
                 continue
-
-            description = str(item.get("description", "")).strip()
 
             # Get or create screening data
             screening = item.get("screening", {}) or {}
+            low_title = title.lower()
+            low_desc = description.lower()
+
+            # WB procurement listing often mixes closed "Contract Award" rows
+            # with active opportunities. Drop obvious award rows early so
+            # downstream stages stay focused on open opportunities only.
+            if worldbank_procurement_mode:
+                looks_award = (
+                    "contract award" in low_title
+                    or "contract award" in low_desc
+                    or "award notice" in low_title
+                    or "award notice" in low_desc
+                )
+                if looks_award:
+                    reject_stats["award_notice_reject"] += 1
+                    continue
 
             # Check unrelated flag.
             # For AfDB strict-country mode, keep Ethiopia-matching listing rows even if
             # the LLM marks them unrelated from sparse snippet context.
-            if not afdb_country_mode and screening.get("unrelated_to_precise_scope", False):
+            if (
+                not afdb_country_mode
+                and not worldbank_region_mode
+                and not tma_procurement_mode
+                and screening.get("unrelated_to_precise_scope", False)
+            ):
+                reject_stats["unrelated_scope"] += 1
                 continue
 
             # Calculate yes_count from step1
@@ -468,22 +525,39 @@ Extract opportunities as a JSON array only."""
             yes_count = sum(1 for key in self.STEP1_KEYS if step1.get(key))
 
             # Keep only opportunities that pass the initial checklist threshold.
-            if yes_count < 3 and not afdb_country_mode:
+            if yes_count < 3 and not afdb_country_mode and not worldbank_region_mode and not tma_procurement_mode:
+                reject_stats["yes_count_lt3"] += 1
                 continue
 
             # Geography hard gate:
             # - default mode: respect LLM geographic_fit boolean.
             # - AfDB strict-country mode: rely on deterministic geo checks below.
-            if not afdb_country_mode and not bool(step1.get("geographic_fit")):
+            if (
+                not afdb_country_mode
+                and not worldbank_region_mode
+                and not tma_procurement_mode
+                and not bool(step1.get("geographic_fit"))
+            ):
+                reject_stats["geographic_fit_false"] += 1
                 continue
 
             # Secondary hard geo gate: deterministic allowlist check to catch
             # LLM errors where geographic_fit=true was set for non-EA countries
-            # (e.g. Montenegro, Sri Lanka).  Checks step3.country first, then
+            # (e.g. Montenegro, Sri Lanka). Checks step3.country first, then
             # falls back to title / description signals.
+            #
+            # In World Bank strict East-Africa mode we skip this generic gate
+            # and rely on `is_specific_country_allowed(east_africa, ...)`
+            # below, because WB listing snippets can carry noisy/partial
+            # geography text that over-trips the generic blocked-token logic.
             step3_check = screening.get("step3", {}) or {}
             country_check = str(step3_check.get("country", "")).strip()
-            if not is_geography_allowed(country_check, title=title, description=description):
+            if (
+                not tma_procurement_mode
+                and not worldbank_region_mode
+                and not is_geography_allowed(country_check, title=title, description=description)
+            ):
+                reject_stats["geo_hard_reject"] += 1
                 logger.info(
                     "Agent 1 geo hard-reject: country=%r title=%r",
                     country_check, title[:80],
@@ -496,6 +570,7 @@ Extract opportunities as a JSON array only."""
                 title=title,
                 description=description,
             ):
+                reject_stats["strict_country_reject"] += 1
                 logger.info(
                     "Agent 1 strict-country reject: required=%r country=%r title=%r",
                     strict_country, country_check, title[:80],
@@ -505,8 +580,9 @@ Extract opportunities as a JSON array only."""
             # Mission alignment is mandatory in general, but AfDB strict-country mode
             # intentionally keeps Ethiopia-targeted rows even if the LLM under-scores
             # mission fit on short listing snippets.
-            if not afdb_country_mode:
+            if not afdb_country_mode and not worldbank_region_mode and not tma_procurement_mode:
                 if not bool(step1.get("mission_alignment")):
+                    reject_stats["mission_reject"] += 1
                     logger.info(
                         "Agent 1 mission-align reject: title=%r", title[:80]
                     )
@@ -514,8 +590,9 @@ Extract opportunities as a JSON array only."""
 
             # Eligibility is mandatory in general; relaxed for AfDB strict-country
             # mode because RSS/listing rows are terse and can be under-scored.
-            if not afdb_country_mode:
+            if not afdb_country_mode and not worldbank_region_mode and not tma_procurement_mode:
                 if not bool(step1.get("eligibility_quick_check")):
+                    reject_stats["eligibility_reject"] += 1
                     logger.info(
                         "Agent 1 eligibility reject: title=%r", title[:80]
                     )
@@ -525,7 +602,13 @@ Extract opportunities as a JSON array only."""
             # AfDB strict-country mode (user requested Ethiopia-inclusive capture).
             step2_check = screening.get("step2", {}) or {}
             signals = step2_check.get("strategic_signals", []) or []
-            if not afdb_country_mode and "engagement_supply_only" in signals:
+            if (
+                not afdb_country_mode
+                and not worldbank_region_mode
+                and not tma_procurement_mode
+                and "engagement_supply_only" in signals
+            ):
+                reject_stats["supply_only_reject"] += 1
                 logger.info(
                     "Agent 1 supply-only reject: title=%r", title[:80]
                 )
@@ -533,8 +616,10 @@ Extract opportunities as a JSON array only."""
 
             # Enrich screening data
             screening["yes_count"] = yes_count
-            if afdb_country_mode:
+            if afdb_country_mode or worldbank_region_mode:
                 screening["passes_filter"] = True
+            elif tma_procurement_mode:
+                screening["passes_filter"] = yes_count >= 1
             else:
                 screening["passes_filter"] = yes_count >= 3 and bool(step1.get("geographic_fit"))
             screening["unrelated_to_precise_scope"] = False
@@ -557,7 +642,22 @@ Extract opportunities as a JSON array only."""
                 "screening": screening,
                 "date_status": "unknown",
             })
-
+            reject_stats["kept"] += 1
+        if items:
+            reject_only = {k: v for k, v in reject_stats.items() if k not in ("kept",) and v}
+            logger.info(
+                "Agent 1 validate summary: total=%s kept=%s rejects=%s strict=%r wb_mode=%s afdb_mode=%s",
+                len(items),
+                reject_stats.get("kept", 0),
+                reject_only,
+                strict_country,
+                worldbank_region_mode,
+                afdb_country_mode,
+            )
+            pipeline_tty(
+                f"[AGENT1] · validate summary | total={len(items)} kept={reject_stats.get('kept', 0)} "
+                f"| rejects={json.dumps(reject_only, ensure_ascii=True)}"
+            )
         return validated
 
     def _validate(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

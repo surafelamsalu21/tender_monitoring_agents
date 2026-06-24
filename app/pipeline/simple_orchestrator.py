@@ -143,8 +143,16 @@ async def run_simple_pipeline(
     expiry_dropped = 0
     ex_src = listing_markdown_for_expiry if listing_markdown_for_expiry.strip() else md_source
     # AfDB strict-country (RSS fallback) rows only carry a publication date,
-    # not a closing deadline, so skip the expiry gate for that source.
-    skip_expiry_gate = bool(strict_country and "afdb.org" in (page_url or "").lower())
+    # not a closing deadline. WB East-Africa listing rows can also expose
+    # publication/contract dates without clear deadlines. Skip expiry for both.
+    page_url_l = (page_url or "").lower()
+    skip_expiry_gate = bool(
+        strict_country
+        and (
+            "afdb.org" in page_url_l
+            or (strict_country == "east_africa" and "worldbank.org" in page_url_l)
+        )
+    )
     if settings.SKIP_EXPIRED_AFTER_AGENT1 and not skip_expiry_gate:
         all_tenders, expiry_dropped = filter_expired_agent1_items(all_tenders, ex_src)
         if expiry_dropped:

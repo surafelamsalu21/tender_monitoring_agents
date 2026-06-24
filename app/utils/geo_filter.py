@@ -222,15 +222,17 @@ def _title_has_allowed_token(title_lower: str) -> bool:
 
 def required_country_from_page_url(page_url: str) -> str | None:
     """
-    Extract a strict country override encoded in a monitored page URL.
+    Extract a strict geography override encoded in a monitored page URL.
 
-    Only the AfDB-specific ``afdb_country`` key is honoured (in either the query
-    string or the URL fragment) so this never accidentally affects other sources
-    that happen to use a generic ``country`` query parameter.
+    Supported controls:
+    - AfDB strict country: ``afdb_country=ethiopia``
+    - Generic strict scope: ``geo_scope=east_africa`` (or ``geo_scope=ethiopia``)
+    - World Bank helper alias: ``wb_region=east_africa``
 
     Example:
         https://www.afdb.org/en/projects-and-operations/procurement?afdb_country=ethiopia
         https://www.afdb.org/en/projects-and-operations/procurement#afdb_country=ethiopia
+        https://www.worldbank.org/en/projects-operations/procurement?srce=both&wb_region=east_africa
     """
     raw_url = (page_url or "").strip()
     if not raw_url:
@@ -242,7 +244,26 @@ def required_country_from_page_url(page_url: str) -> str | None:
     if not raw:
         frag_params = parse_qs((parsed.fragment or "").lstrip("#"))
         raw = ((frag_params.get("afdb_country") or [""])[0]).strip().lower()
-    return raw or None
+    if raw:
+        return raw
+
+    scope_raw = ((params.get("geo_scope") or params.get("wb_region") or [""])[0]).strip().lower()
+    if not scope_raw:
+        frag_params = parse_qs((parsed.fragment or "").lstrip("#"))
+        scope_raw = ((frag_params.get("geo_scope") or frag_params.get("wb_region") or [""])[0]).strip().lower()
+    if not scope_raw:
+        return None
+
+    normalized = scope_raw.replace("-", "_").replace(" ", "_")
+    aliases = {
+        "east_africa": "east_africa",
+        "eastafrica": "east_africa",
+        "africa_east": "east_africa",
+        "eastern_and_southern_africa": "east_africa",
+        "esa": "east_africa",
+        "ethiopia": "ethiopia",
+    }
+    return aliases.get(normalized)
 
 
 def is_specific_country_allowed(
@@ -277,4 +298,31 @@ def is_specific_country_allowed(
                 return False
         return any(token in hay for token in ("ethiopia", "ethiopian", "addis ababa"))
 
+    if wanted == "east_africa":
+        return _is_strict_east_africa_match(hay)
+
     return wanted in hay
+
+
+def _is_strict_east_africa_match(haystack_lower: str) -> bool:
+    """
+    Strict East Africa matcher for URL-encoded regional overrides.
+
+    Priority:
+    1) Explicit East Africa signal   -> allow
+    2) Explicit non-East-Africa signal -> reject
+    3) Ambiguous / no geo signal -> allow
+
+    World Bank listing rows can be sparse and sometimes omit country in the
+    extracted snippet even when UI filters are already set. In that case we
+    keep the row and rely on downstream geo checks when richer detail appears.
+    """
+    if not haystack_lower:
+        return True
+    for token in _ALLOWED_TOKENS:
+        if token in haystack_lower:
+            return True
+    for token in _BLOCKED_TOKENS:
+        if token in haystack_lower:
+            return False
+    return True

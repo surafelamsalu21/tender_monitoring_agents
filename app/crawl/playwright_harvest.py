@@ -24,6 +24,7 @@ from app.crawl.types import HarvestResult
 from app.models.page import MonitoredPage
 
 logger = logging.getLogger(__name__)
+_MIN_PAGE_ATTEMPTS = 2
 
 
 def _html_to_text(html: str) -> str:
@@ -76,6 +77,151 @@ def _undp_region_filter_id(listing_url: str) -> str | None:
         "latin_america_and_the_caribbean": "region_RBLAC",
     }
     return region_map.get(normalized)
+
+
+def _is_worldbank_procurement_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    host = parsed.netloc.lower()
+    return (
+        "worldbank.org" in host
+        and "/projects-operations/procurement" in parsed.path.lower()
+    )
+
+
+def _worldbank_scope_filter_value(listing_url: str) -> str | None:
+    """
+    Support URL-encoded local filter hints for World Bank procurement listings.
+
+    Example:
+      https://www.worldbank.org/en/projects-operations/procurement?srce=both&geo_scope=ethiopia
+
+    We only honor dedicated local keys (`wb_region` / `geo_scope`) so existing
+    site query params remain untouched.
+    """
+    if not _is_worldbank_procurement_url(listing_url):
+        return None
+
+    parsed = urlparse(listing_url)
+    params = parse_qs(parsed.query)
+    raw = ((params.get("wb_region") or params.get("geo_scope") or [""])[0]).strip()
+    if not raw:
+        frag_params = parse_qs((parsed.fragment or "").lstrip("#"))
+        raw = ((frag_params.get("wb_region") or frag_params.get("geo_scope") or [""])[0]).strip()
+    if not raw:
+        return None
+
+    normalized = raw.lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "east_africa": "east_africa",
+        "eastafrica": "east_africa",
+        "africa_east": "east_africa",
+        "eastern_and_southern_africa": "east_africa",
+        "esa": "east_africa",
+        "ethiopia": "ethiopia",
+        "ethiopian": "ethiopia",
+    }
+    return aliases.get(normalized)
+
+
+async def _apply_worldbank_region_filter(page, listing_url: str) -> str | None:
+    scope = _worldbank_scope_filter_value(listing_url)
+    if scope not in ("east_africa", "ethiopia"):
+        return None
+
+    targets_by_scope = {
+        "east_africa": [
+            "east africa",
+            "africa east",
+            "eastern and southern africa",
+        ],
+        "ethiopia": [
+            "ethiopia",
+            "ethiopian",
+        ],
+    }
+    targets = targets_by_scope.get(scope) or []
+
+    applied = await page.evaluate(
+        """(targets) => {
+            const normalize = (s) => String(s || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+            const body = Array.from(document.querySelectorAll('label, a, button, li, span, div, input'));
+            const visible = (el) => {
+                const st = window.getComputedStyle(el);
+                return st && st.display !== 'none' && st.visibility !== 'hidden';
+            };
+            const score = (txt) => {
+                const t = normalize(txt);
+                if (!t) return 0;
+                if (targets.some((x) => t === x || t.startsWith(x + ' ') || t.includes(x + ' ('))) return 3;
+                if (targets.some((x) => t.includes(x))) return 2;
+                return 0;
+            };
+            let best = null;
+            let bestScore = 0;
+            for (const el of body) {
+                if (!visible(el)) continue;
+                const direct = normalize(el.textContent || '');
+                let s = score(direct);
+                if (el.tagName.toLowerCase() === 'input') {
+                    const id = el.getAttribute('id');
+                    if (id) {
+                        const lbl = document.querySelector(`label[for="${id}"]`);
+                        if (lbl) s = Math.max(s, score(lbl.textContent || ''));
+                    }
+                }
+                if (s > bestScore) {
+                    best = el;
+                    bestScore = s;
+                }
+            }
+            if (!best || bestScore <= 0) return null;
+
+            const clickInput = (inputEl) => {
+                if (!inputEl) return false;
+                const typ = String(inputEl.getAttribute('type') || '').toLowerCase();
+                if (typ !== 'checkbox' && typ !== 'radio') return false;
+                if (!inputEl.checked) inputEl.click();
+                inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+                return true;
+            };
+
+            let clicked = false;
+            if (best.tagName.toLowerCase() === 'input') {
+                clicked = clickInput(best);
+            }
+            if (!clicked) {
+                const nested = best.querySelector('input[type="checkbox"], input[type="radio"]');
+                if (nested) clicked = clickInput(nested);
+            }
+            if (!clicked) {
+                const wrap = best.closest('label, button, a, [role="button"], li, div');
+                if (wrap) {
+                    wrap.click();
+                    clicked = true;
+                }
+            }
+            if (!clicked) return null;
+
+            // Attempt explicit apply button if the listing UI needs it.
+            const applyBtn = Array.from(
+                document.querySelectorAll('button, input[type="button"], input[type="submit"], a')
+            ).find((el) => {
+                const txt = normalize(
+                    el.tagName.toLowerCase() === 'input' ? el.getAttribute('value') : el.textContent
+                );
+                return txt === 'apply' || txt.includes('apply filter') || txt.includes('show');
+            });
+            if (applyBtn) applyBtn.click();
+            return targets[0] || 'matched_scope';
+        }""",
+        targets,
+    )
+    if applied:
+        # World Bank listing refresh is async and can lag after facet clicks.
+        await page.wait_for_timeout(1800)
+        return scope
+    return None
 
 
 async def _apply_undp_region_filter(page, listing_url: str) -> str | None:
@@ -222,11 +368,13 @@ def _afdb_navigation_url(listing_url: str) -> str:
     endpoint and return 403. We keep the country hint for local automation but
     navigate using a clean URL.
     """
-    if not _is_afdb_procurement_url(listing_url):
-        return listing_url
     parsed = urlparse(listing_url)
+    if not (_is_afdb_procurement_url(listing_url) or _is_worldbank_procurement_url(listing_url)):
+        return listing_url
     params = parse_qs(parsed.query, keep_blank_values=True)
     params.pop("afdb_country", None)
+    params.pop("wb_region", None)
+    params.pop("geo_scope", None)
     clean_q = urlencode([(k, v) for k, vals in params.items() for v in vals])
     return urlunparse((
         parsed.scheme, parsed.netloc, parsed.path,
@@ -242,8 +390,8 @@ def _max_pages_for_listing_url(listing_url: str) -> int:
     """
     configured = int(getattr(settings, "PLAYWRIGHT_MAX_PAGES", 4) or 4)
     if _is_afdb_procurement_url(listing_url):
-        return max(1, min(max(configured, 6), 6))
-    return max(1, min(configured, 4))
+        return max(_MIN_PAGE_ATTEMPTS, min(max(configured, 6), 6))
+    return max(_MIN_PAGE_ATTEMPTS, min(configured, 4))
 
 
 def _looks_like_cloudflare_challenge(text: str, html: str) -> bool:
@@ -283,7 +431,7 @@ def _afdb_rss_fallback_sync(
     Uses official RSS feed (paginated via ?page=N) and applies an optional
     country keyword filter. Aggregates and de-duplicates across pages.
     """
-    pages = max(1, min(int(max_pages or 1), 6))
+    pages = max(_MIN_PAGE_ATTEMPTS, min(int(max_pages or _MIN_PAGE_ATTEMPTS), 6))
     wanted = (required_country or "").strip().lower()
 
     rows: list[str] = []
@@ -422,6 +570,137 @@ def _is_eu_tenders_portal(url: str) -> bool:
     return parsed.netloc.lower() in ("ec.europa.eu", "www.ec.europa.eu") and "funding-tenders" in parsed.path
 
 
+def _is_egp_bids_url(url: str) -> bool:
+    """Ethiopian eGP public bids listing."""
+    parsed = urlparse(url or "")
+    return parsed.netloc.lower() in ("egp.gov.et", "www.egp.gov.et") and "/egp/bids" in parsed.path.lower()
+
+
+async def _egp_click_if_visible(page, selector: str) -> bool:
+    try:
+        locator = page.locator(selector).first
+        if await locator.count() == 0:
+            return False
+        if not await locator.is_visible():
+            return False
+        await locator.click()
+        await page.wait_for_timeout(1000)
+        return True
+    except Exception:
+        return False
+
+
+async def _capture_egp_bids_listing(
+    page, listing_url: str, max_pages: int
+) -> tuple[str, list[str], str, int]:
+    """
+    eGP renders listings dynamically; rely on robust waits and row extraction
+    instead of generic pagination selectors.
+    """
+    navigated = False
+    last_exc: Exception | None = None
+    for wait_state in ("domcontentloaded", "networkidle", "commit"):
+        try:
+            timeout_ms = 70_000 if wait_state == "networkidle" else 45_000
+            await page.goto(listing_url, wait_until=wait_state, timeout=timeout_ms)
+            navigated = True
+            break
+        except Exception as exc:
+            last_exc = exc
+            logger.info("EGP goto(%s) failed (%s); trying next wait state.", wait_state, exc)
+    if not navigated:
+        logger.warning("EGP page failed to load: %s", last_exc)
+        return "", [], "", 0
+
+    # The listing can appear under different tab states. Try to enforce
+    # "All Tenders" and "Table" where available.
+    await _egp_click_if_visible(page, 'button:has-text("All Tenders")')
+    await _egp_click_if_visible(page, 'a:has-text("All Tenders")')
+    await _egp_click_if_visible(page, 'button:has-text("Table")')
+    await _egp_click_if_visible(page, 'a:has-text("Table")')
+
+    # Give XHR-backed grid enough time to populate.
+    await page.wait_for_timeout(3500)
+    try:
+        await page.wait_for_selector(
+            "table tbody tr, .table tbody tr, .ant-table-tbody tr, [role='row']",
+            timeout=20_000,
+        )
+    except Exception:
+        await page.wait_for_timeout(5000)
+
+    pages_budget = max(_MIN_PAGE_ATTEMPTS, min(max_pages or _MIN_PAGE_ATTEMPTS, 4))
+    seen_rows: set[str] = set()
+    out_rows: list[str] = []
+    pages_captured = 0
+
+    for page_idx in range(1, pages_budget + 1):
+        rows = await page.evaluate(
+            """() => {
+                const selectors = [
+                    'table tbody tr',
+                    '.table tbody tr',
+                    '.ant-table-tbody tr',
+                    '[role="row"]',
+                ];
+                const allRows = [];
+                for (const sel of selectors) {
+                    for (const tr of document.querySelectorAll(sel)) {
+                        const txt = (tr.innerText || tr.textContent || '')
+                            .replace(/\\s+/g, ' ')
+                            .trim();
+                        if (txt && txt.length >= 25) allRows.push(txt);
+                    }
+                }
+                return allRows;
+            }"""
+        )
+        for row in rows or []:
+            line = str(row).strip()
+            if not line or line in seen_rows:
+                continue
+            seen_rows.add(line)
+            out_rows.append(line)
+        pages_captured += 1
+
+        # Try to navigate to next page using common controls used by data grids.
+        if page_idx >= pages_budget:
+            break
+        moved = await page.evaluate(
+            """() => {
+                const candidates = Array.from(
+                    document.querySelectorAll('button, a, li, [role="button"]')
+                );
+                const next = candidates.find((el) => {
+                    const txt = (el.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                    if (!txt) return false;
+                    return txt === 'next' || txt === '>' || txt === '›' || txt.includes('next');
+                });
+                if (!next) return false;
+                const attr = ((next.getAttribute('class') || '') + ' ' + (next.getAttribute('aria-disabled') || '')).toLowerCase();
+                if (attr.includes('disabled') || attr.includes('true')) return false;
+                next.click();
+                return true;
+            }"""
+        )
+        if not moved:
+            break
+        await page.wait_for_timeout(2200)
+
+    page_text = await _visible_page_text(page)
+    page_links = await _visible_links(page)
+    html = await page.content()
+
+    rows_md = "\n".join(f"- {row}" for row in out_rows[:400])
+    body = (
+        f"\n\n--- EGP Listing: {page.url} ---\n\n"
+        f"{page_text}\n\n"
+        "Visible tender rows:\n"
+        f"{rows_md}"
+    ).strip()
+    return body, page_links, html, pages_captured
+
+
 def _eu_portal_page_urls(listing_url: str, max_pages: int) -> list[str]:
     """
     Generate up to *max_pages* paginated URLs for the EU portal by incrementing
@@ -430,10 +709,16 @@ def _eu_portal_page_urls(listing_url: str, max_pages: int) -> list[str]:
     """
     parsed = urlparse(listing_url)
     params = parse_qs(parsed.query, keep_blank_values=True)
+    pages_budget = max(_MIN_PAGE_ATTEMPTS, int(max_pages or _MIN_PAGE_ATTEMPTS))
+    try:
+        start_page = int((params.get("pageNumber") or ["1"])[0] or "1")
+    except (TypeError, ValueError):
+        start_page = 1
+
     if "pageNumber" not in params:
-        return [listing_url]
+        params["pageNumber"] = [str(start_page)]
     urls: list[str] = []
-    for page_num in range(1, max_pages + 1):
+    for page_num in range(start_page, start_page + pages_budget):
         p = {k: v[0] for k, v in params.items()}
         p["pageNumber"] = str(page_num)
         new_url = urlunparse((
@@ -750,6 +1035,12 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
             )
             try:
                 context = await browser.new_context()
+                await context.add_init_script(
+                    """
+                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                    window.chrome = window.chrome || { runtime: {} };
+                    """
+                )
                 page = await context.new_page()
                 page.set_default_timeout(settings.PLAYWRIGHT_TIMEOUT_MS)
 
@@ -777,6 +1068,10 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
                     text, links, html, pages_captured = await _capture_eu_portal_listing(
                         page, listing_url, max_p
                     )
+                elif _is_egp_bids_url(listing_url):
+                    text, links, html, pages_captured = await _capture_egp_bids_listing(
+                        page, listing_url, max_p
+                    )
                 else:
                     # Generic listing — try the configured wait state first,
                     # then fall back to domcontentloaded for sites that never
@@ -795,6 +1090,10 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
                         afdb_country = await _apply_afdb_country_filter(page, listing_url)
                         if afdb_country:
                             applied_filter = f"afdb_country:{afdb_country}"
+                    if not applied_filter:
+                        wb_scope = await _apply_worldbank_region_filter(page, listing_url)
+                        if wb_scope:
+                            applied_filter = f"wb_scope:{wb_scope}"
                     text, links, html, pages_captured = await _capture_paginated_listing(
                         page,
                         listing_url,
