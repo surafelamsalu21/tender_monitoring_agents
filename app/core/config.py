@@ -203,7 +203,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = Field(
         default="your-secret-key-change-in-production", env="SECRET_KEY")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
-        default=30, env="ACCESS_TOKEN_EXPIRE_MINUTES")
+        default=480, env="ACCESS_TOKEN_EXPIRE_MINUTES")
 
     @model_validator(mode="after")
     def resolve_sqlite_relative_to_project(self) -> "Settings":

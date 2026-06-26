@@ -31,6 +31,7 @@ from app.utils.geo_filter import (
     is_specific_country_allowed,
     required_country_from_page_url,
 )
+from app.utils.url_normalize import normalize_fetch_url
 
 logger = logging.getLogger(__name__)
 
@@ -473,7 +474,7 @@ Extract opportunities as a JSON array only."""
         for item in items:
             # Required fields
             title = str(item.get("title", "")).strip()
-            url = str(item.get("url", "")).strip()
+            url = normalize_fetch_url(str(item.get("url", "")).strip())
             description = str(item.get("description", "")).strip()
 
             # World Bank listing rows can lack direct detail links.

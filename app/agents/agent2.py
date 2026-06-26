@@ -17,6 +17,11 @@ from app.agents.page_sanity import (
     http_status_is_hard_failure,
     markdown_indicates_error_or_empty_notice,
 )
+from app.utils.url_normalize import (
+    fetch_url_candidates,
+    looks_like_pdf_url,
+    normalize_fetch_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +220,9 @@ class TenderDetailAgent:
         Scrapes the tender page using the TenderScraper service.
         Returns (markdown_or_none, http_status_or_none).
         """
-        tender_url = await self._repair_undp_detail_url(tender_url) or tender_url
+        tender_url = normalize_fetch_url(
+            await self._repair_undp_detail_url(tender_url) or tender_url
+        )
         if self._is_un_careers_detail_url(tender_url):
             text = await self._scrape_un_careers_detail_api(tender_url)
             if text:
@@ -237,10 +244,14 @@ class TenderDetailAgent:
                         )
                         return None, code
                     content = result.get("markdown") or ""
-                    if self._is_pdf_url(tender_url) and self._looks_minimal_or_blocked(content):
+                    if looks_like_pdf_url(tender_url) and self._looks_minimal_or_blocked(content):
                         pdf_text = await self._scrape_pdf_direct(tender_url)
                         if pdf_text:
                             return pdf_text, code
+                        logger.warning(
+                            "Agent 2: PDF crawl shell for %s; direct PDF fallback returned no text",
+                            tender_url,
+                        )
                     logger.info(
                         "Successfully scraped %s characters from %s",
                         len(content),
@@ -250,10 +261,15 @@ class TenderDetailAgent:
                 else:
                     error = result.get('error', 'Unknown error')
                     logger.error(f"Scraping failed for {tender_url}: {error}")
-                    if self._is_pdf_url(tender_url):
+                    if looks_like_pdf_url(tender_url):
                         pdf_text = await self._scrape_pdf_direct(tender_url)
                         if pdf_text:
                             return pdf_text, code
+                        logger.warning(
+                            "Agent 2: scrape failed for PDF %s (%s); direct PDF fallback returned no text",
+                            tender_url,
+                            error,
+                        )
                     if self._should_use_playwright_detail_fallback(tender_url, error):
                         text = await self._scrape_detail_with_playwright(tender_url)
                         return text, None
@@ -563,7 +579,7 @@ class TenderDetailAgent:
 
     @staticmethod
     def _is_pdf_url(url: str) -> bool:
-        return str(url or "").lower().split("?")[0].endswith(".pdf")
+        return looks_like_pdf_url(url)
 
     @staticmethod
     def _looks_minimal_or_blocked(content: str) -> bool:
@@ -578,28 +594,35 @@ class TenderDetailAgent:
 
     async def _scrape_pdf_direct(self, url: str) -> Optional[str]:
         """Direct PDF extraction fallback for URLs that are PDF files."""
-        def _read_pdf() -> Optional[str]:
+        candidates = fetch_url_candidates(url)
+        if not candidates:
+            return None
+
+        def _read_pdf(candidate_url: str) -> tuple[Optional[str], str]:
             import io
             import requests
             try:
                 from pypdf import PdfReader  # type: ignore[reportMissingImports]
             except Exception as exc:
-                logger.error(
-                    "Agent 2: pypdf is required for direct PDF fallback but is unavailable: %s",
-                    exc,
-                )
-                return None
+                return None, f"pypdf unavailable: {exc}"
 
             resp = requests.get(
-                url,
+                candidate_url,
                 timeout=30,
-                headers={"User-Agent": "Mozilla/5.0"},
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "application/pdf,application/octet-stream,*/*",
+                },
+                allow_redirects=True,
             )
             if resp.status_code >= 400:
-                return None
+                return None, f"HTTP {resp.status_code}"
             ctype = str(resp.headers.get("content-type", "")).lower()
-            if "pdf" not in ctype and not self._is_pdf_url(url):
-                return None
+            if "pdf" not in ctype and not looks_like_pdf_url(candidate_url):
+                return None, f"content-type={ctype or 'unknown'}"
             reader = PdfReader(io.BytesIO(resp.content))
             chunks: List[str] = []
             for page in reader.pages[:80]:
@@ -607,21 +630,35 @@ class TenderDetailAgent:
                 if page_text.strip():
                     chunks.append(page_text.strip())
             text = "\n\n".join(chunks).strip()
-            return text or None
+            if not text:
+                return None, "empty text extraction"
+            if len(text) <= 120:
+                return None, f"text too short ({len(text)} chars)"
+            return text, "ok"
 
-        try:
-            text = await asyncio.to_thread(_read_pdf)
-            if text and len(text) > 120:
+        for candidate in candidates:
+            try:
+                text, detail = await asyncio.to_thread(_read_pdf, candidate)
+                if text:
+                    logger.info(
+                        "Agent 2: direct PDF fallback extracted %s chars from %s (via %s)",
+                        len(text),
+                        url,
+                        candidate,
+                    )
+                    return text
                 logger.info(
-                    "Agent 2: direct PDF fallback extracted %s chars from %s",
-                    len(text),
-                    url,
+                    "Agent 2: direct PDF fallback miss for %s (%s)",
+                    candidate,
+                    detail,
                 )
-                return text
-            return None
-        except Exception as exc:
-            logger.warning("Agent 2: direct PDF fallback failed for %s: %s", url, exc)
-            return None
+            except Exception as exc:
+                logger.warning(
+                    "Agent 2: direct PDF fallback failed for %s: %s",
+                    candidate,
+                    exc,
+                )
+        return None
 
     def _should_use_playwright_detail_fallback(self, url: str, error: str) -> bool:
         if not self._is_undp_url(url):

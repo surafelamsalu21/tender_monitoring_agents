@@ -11,6 +11,7 @@ from pydantic import BaseModel, HttpUrl
 from app.core.database import get_db
 from app.repositories.page_repository import PageRepository
 from app.models.page import MonitoredPage
+from app.utils.url_normalize import normalize_fetch_url
 
 router = APIRouter()
 
@@ -126,7 +127,7 @@ async def create_page(page_data: PageCreate, db: Session = Depends(get_db)):
     page = page_repo.create_page(
         db,
         name=page_data.name,
-        url=str(page_data.url),
+        url=normalize_fetch_url(str(page_data.url)),
         description=page_data.description,
         crawl_frequency_hours=page_data.crawl_frequency_hours,
         crawl_strategy=page_data.crawl_strategy,

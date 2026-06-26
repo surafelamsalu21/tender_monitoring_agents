@@ -16,6 +16,7 @@ from typing import Any, List, Optional, Tuple
 from urllib.parse import unquote, urljoin, urlparse
 
 from app.crawl.orchestrator import _flatten_scrape_links
+from app.utils.url_normalize import normalize_fetch_url
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ def _safe_url(base: str, candidate: str) -> Optional[str]:
     c = _strip_url_trailing_junk(unquote(c.split("#", 1)[0]))
     if len(c) < 8 or not c.startswith("http"):
         return None
-    return c
+    return normalize_fetch_url(c)
 
 
 def _is_noise_url(url: str) -> bool:

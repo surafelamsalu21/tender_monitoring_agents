@@ -31,16 +31,19 @@ Extraction rules:
 - If the markdown is an error page (404/not found/access denied), a login wall with no notices, or there are no real procurement notices, return [] exactly. Do not fabricate rows."""
 
 
+from app.utils.url_normalize import normalize_fetch_url
+
+
 def _normalize_row_url(href: str, base_url: str) -> str:
     href = (href or "").strip().split()[0].strip('"')
     if href.startswith("//"):
-        return "https:" + href
+        href = "https:" + href
     base = (base_url or "").strip() or ""
     if href.startswith("/") and base:
-        return urljoin(base.rstrip("/") + "/", href.lstrip("/"))
-    if not href.startswith("http") and base:
-        return urljoin(base.rstrip("/") + "/", href)
-    return href
+        href = urljoin(base.rstrip("/") + "/", href.lstrip("/"))
+    elif not href.startswith("http") and base:
+        href = urljoin(base.rstrip("/") + "/", href)
+    return normalize_fetch_url(href)
 
 
 def _rows_from_parsed_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

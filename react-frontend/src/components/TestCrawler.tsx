@@ -16,6 +16,7 @@ import {
   Clock
 } from 'lucide-react';
 import { apiService } from '../services/api';
+import { normalizePageUrl } from '../utils/urlNormalize';
 
 interface CrawlResult {
   status: 'success' | 'failed' | 'error';
@@ -236,7 +237,7 @@ export const TestCrawler: React.FC<TestCrawlerProps> = ({ onRefresh }) => {
     setAddingToPages(true);
     try {
       await apiService.createPage({
-        url: testUrl,
+        url: normalizePageUrl(testUrl),
         name: pageName.trim(),
         crawl_strategy: selectedStrategy
       });

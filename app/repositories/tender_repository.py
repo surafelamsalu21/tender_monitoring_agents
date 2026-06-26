@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 from app.models.tender import Tender, DetailedTender
 from app.models.keyword import Keyword
 from app.models.page import MonitoredPage
+from app.utils.url_normalize import normalize_fetch_url
 
 class TenderRepository:
     """Enhanced repository for tender database operations with keyword tracking"""
@@ -23,7 +24,7 @@ class TenderRepository:
     def _normalize_url(value: Optional[str]) -> str:
         if not value:
             return ""
-        return str(value).strip().rstrip("/")
+        return normalize_fetch_url(str(value).strip()).rstrip("/")
 
     def _is_listing_page_url(self, db: Session, page_id: int, url: str) -> bool:
         """True when the row URL is just the monitored listing page, not a notice URL."""

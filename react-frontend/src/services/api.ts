@@ -1,6 +1,7 @@
 // services/api.ts - Complete API service with Test Crawler
 import axios from 'axios';
 import { Tender, Page, Keyword, SystemStatus } from '../types';
+import { normalizePageUrl } from '../utils/urlNormalize';
 
 // API base: empty = same origin (CRA dev server proxies /api to backend — works from other PCs on LAN).
 // Set REACT_APP_API_URL when the built UI is hosted separately from the API (e.g. http://192.168.1.10:8000).
@@ -406,7 +407,10 @@ export const apiService = {
   },
 
   createPage: async (data: { url: string; name: string; crawl_strategy?: Page['crawl_strategy'] }): Promise<Page> => {
-    const responseData = await apiRequest('/api/v1/pages/', 'post', data);
+    const responseData = await apiRequest('/api/v1/pages/', 'post', {
+      ...data,
+      url: normalizePageUrl(data.url),
+    });
     return responseData as Page;
   },
 
