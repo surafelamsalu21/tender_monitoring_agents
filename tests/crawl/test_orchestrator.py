@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.crawl.eligibility import is_monitored_page_due_for_crawl
 from app.crawl.eu_funding import filter_query_from_url
-from app.crawl.orchestrator import harvest_for_page, _flatten_scrape_links
+from app.crawl.orchestrator import harvest_for_page, _flatten_scrape_links, _should_retry_with_playwright
 from app.crawl.playwright_harvest import harvest_with_playwright
 from app.crawl.types import HarvestResult
 from app.crawl.un_careers import filter_config_from_url
@@ -48,6 +48,16 @@ def test_flatten_scrape_links_dict_format():
         "external": [{"href": "https://b/2"}],
     }
     assert _flatten_scrape_links(links) == ["https://a/1", "https://b/2"]
+
+
+def test_egp_shell_guard_text_triggers_playwright_retry():
+    url = "https://production.egp.gov.et/egp/bids/all"
+    shell = (
+        "Inspect is not allowed in this application. "
+        "Developer tools are not permitted on this application for security reasons. "
+        "Please close the browser developer tools, then click Go Back to continue."
+    )
+    assert _should_retry_with_playwright(url, shell, []) is True
 
 
 @patch("app.services.scraper.TenderScraper")

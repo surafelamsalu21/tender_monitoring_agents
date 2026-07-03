@@ -25,7 +25,9 @@ import {
   FileText,
   AlertCircle,
   DollarSign,
-  RefreshCw
+  RefreshCw,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { Tender, CategoryType } from '../types';
 import { apiService, AuthUser } from '../services/api';
@@ -123,6 +125,8 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
   const [retryingId, setRetryingId] = useState<number | null>(null);
   const [bulkRetrying, setBulkRetrying] = useState(false);
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 20;
 
   const requestDelete = (tender: Tender) => {
     setTenderPendingDelete(tender);
@@ -332,6 +336,23 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
   };
 
   const filteredTenders = getFilteredTenders();
+  const totalPages = Math.max(1, Math.ceil(filteredTenders.length / itemsPerPage));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const pageStartIndex = (safeCurrentPage - 1) * itemsPerPage;
+  const paginatedTenders = filteredTenders.slice(
+    pageStartIndex,
+    pageStartIndex + itemsPerPage
+  );
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, selectedCategory, selectedView, sortBy, engagementFilter, tenders.length]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const formatDate = (dateString: string | null | undefined) => {
     if (!dateString) return 'N/A';
@@ -648,7 +669,7 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
               </button>
             </div>
           ) : (
-            filteredTenders.map((tender) => {
+            paginatedTenders.map((tender) => {
               const isNewToday = isTenderCreatedLocalToday(tender.created_at);
               return (
               <div
@@ -808,11 +829,52 @@ export const TenderList: React.FC<TenderListProps> = ({ tenders, onRefresh, curr
 
         {/* Results Summary */}
         <div className="mt-8 text-center text-sm text-gray-500">
-          Showing {filteredTenders.length} of {tenders.length} tenders
+          Showing {filteredTenders.length === 0 ? 0 : pageStartIndex + 1}-
+          {Math.min(pageStartIndex + paginatedTenders.length, filteredTenders.length)} of {filteredTenders.length} filtered tender
+          {filteredTenders.length === 1 ? '' : 's'} ({tenders.length} total)
           {selectedView === 'processed' && ` • ${stats.processed} processed by AI`}
           {selectedView === 'active' && ` • ${stats.active} active tenders`}
           {selectedView === 'expired' && ` • ${stats.expired} expired tenders`}
         </div>
+
+        {filteredTenders.length > 0 && totalPages > 1 && (
+          <div className="mt-4 flex items-center justify-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={safeCurrentPage === 1}
+              className="inline-flex items-center px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ChevronLeft className="h-4 w-4 mr-1" />
+              Previous
+            </button>
+
+            {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
+              <button
+                key={page}
+                type="button"
+                onClick={() => setCurrentPage(page)}
+                className={`px-3 py-2 text-sm rounded-lg border ${
+                  safeCurrentPage === page
+                    ? 'bg-primary-600 text-white border-primary-600'
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                {page}
+              </button>
+            ))}
+
+            <button
+              type="button"
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              disabled={safeCurrentPage === totalPages}
+              className="inline-flex items-center px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Next
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Modal */}

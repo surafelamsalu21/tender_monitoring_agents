@@ -16,7 +16,7 @@ if "langchain_ollama" not in sys.modules:
 
 import app.models  # noqa: F401 - register SQLAlchemy models
 from app.core.database import Base
-from app.crawl.playwright_harvest import _undp_region_filter_id
+from app.crawl.playwright_harvest import _is_egp_bids_url, _undp_region_filter_id
 from app.models.page import MonitoredPage
 from app.pipeline.agent1_structure import _heuristic_rows_from_markdown
 from app.repositories.tender_repository import TenderRepository
@@ -57,6 +57,13 @@ def test_undp_africa_region_filter_url_convention():
         == "region_RAF"
     )
     assert _undp_region_filter_id("https://example.com/?region=africa") is None
+
+
+def test_egp_bids_url_detects_production_host():
+    assert _is_egp_bids_url("https://production.egp.gov.et/egp/bids/all")
+    assert _is_egp_bids_url("https://www.production.egp.gov.et/egp/bids/all")
+    assert _is_egp_bids_url("https://egp.gov.et/egp/bids/all")
+    assert not _is_egp_bids_url("https://production.egp.gov.et/egp/home")
 
 
 def test_duplicate_check_uses_detail_url_when_llm_wording_changes():

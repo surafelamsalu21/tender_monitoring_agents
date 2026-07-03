@@ -198,6 +198,17 @@ class ListingExtractionAgent:
                 "ListingExtractionAgent: error-like or empty markdown; skipping LLM (0 rows)"
             )
             return []
+
+        from app.crawl.worldbank_procurement import parse_worldbank_api_markdown
+
+        wb_rows = parse_worldbank_api_markdown(page_content or "")
+        if wb_rows:
+            logger.info(
+                "ListingExtractionAgent: deterministic World Bank API parse (%s row(s))",
+                len(wb_rows),
+            )
+            return wb_rows
+
         timeout = int(getattr(settings, "AGENT1_FAST_STEP_TIMEOUT_SEC", 300) or 300)
         base = (page_url or "").strip()
 

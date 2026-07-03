@@ -15,12 +15,17 @@ import json
 import logging
 import os
 import xml.etree.ElementTree as ET
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
 from app.core.config import settings
 from app.crawl.types import HarvestResult
+from app.crawl.worldbank_procurement import (
+    worldbank_notice_detail_url,
+    worldbank_notice_passes_consulting_prefilter,
+    worldbank_notice_to_listing_row,
+)
 from app.models.page import MonitoredPage
 
 logger = logging.getLogger(__name__)
@@ -222,6 +227,208 @@ async def _apply_worldbank_region_filter(page, listing_url: str) -> str | None:
         await page.wait_for_timeout(1800)
         return scope
     return None
+
+
+_WB_PROCNOTICES_API = "https://search.worldbank.org/api/v2/procnotices"
+_WB_API_ROWS_PER_PAGE = 50
+_WB_SCOPE_COUNTRY_NAMES: dict[str, list[str]] = {
+    "ethiopia": ["Ethiopia"],
+    "east_africa": [
+        "Ethiopia",
+        "Kenya",
+        "Uganda",
+        "Tanzania",
+        "Rwanda",
+        "Burundi",
+        "Somalia, Federal Republic of",
+        "Djibouti",
+        "Eritrea",
+        "South Sudan",
+        "Sudan",
+        "Seychelles",
+        "Madagascar",
+        "Comoros",
+    ],
+}
+
+
+def _worldbank_api_country_names(scope: str) -> list[str]:
+    return list(_WB_SCOPE_COUNTRY_NAMES.get(scope) or [])
+
+
+def _worldbank_notice_detail_url(notice_id: str) -> str:
+    return worldbank_notice_detail_url(notice_id)
+
+
+def _worldbank_procnotices_fetch(*, country: str, offset: int, rows: int) -> dict:
+    query = urlencode(
+        [
+            ("format", "json"),
+            ("project_ctry_name", country),
+            ("rows", str(rows)),
+            ("os", str(offset)),
+        ],
+        quote_via=quote,
+    )
+    url = f"{_WB_PROCNOTICES_API}?{query}"
+    req = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+            )
+        },
+    )
+    with urlopen(req, timeout=45) as resp:
+        payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+    if not isinstance(payload, dict):
+        raise ValueError("World Bank procnotices API returned non-object JSON")
+    return payload
+
+
+def _worldbank_format_notice_row(notice: dict) -> tuple[str, str | None]:
+    listing = worldbank_notice_to_listing_row(notice)
+    if not listing:
+        return "", None
+    title = listing["title"]
+    country = listing.get("country") or "unknown"
+    detail_url = listing.get("detail_url")
+    notice_type = str(notice.get("notice_type") or "").strip()
+    notice_date = listing.get("publication_date") or ""
+    project = str(notice.get("project_name") or "").strip()
+    project_id = str(notice.get("project_id") or "").strip()
+    language = str(notice.get("notice_lang_name") or "").strip()
+    project_title = f"{project} - {project_id}".strip(" -") if project or project_id else ""
+    table_row = " | ".join(
+        part for part in (title, country, project_title, notice_type, language, notice_date) if part
+    )
+    lines = [
+        f"- {title}",
+        f"  - Country: {country}",
+    ]
+    if project_title:
+        lines.append(f"  - Project: {project_title}")
+    if notice_type:
+        lines.append(f"  - Notice type: {notice_type}")
+    if notice_date:
+        lines.append(f"  - Date: {notice_date}")
+    if detail_url:
+        lines.append(f"  - Link: {detail_url}")
+    if listing.get("snippet"):
+        lines.append(f"  - Summary: {listing['snippet']}")
+    if table_row:
+        lines.append(f"  - Row: {table_row}")
+    return "\n".join(lines), detail_url
+
+
+def _worldbank_api_harvest_sync(
+    scope: str,
+    max_pages: int,
+) -> tuple[str, list[str], str, int, list[dict], dict[str, int]]:
+    """
+    Harvest World Bank procurement notices via the official search API.
+
+    Uses ``project_ctry_name`` (same facet the public listing UI exposes).
+    """
+    countries = _worldbank_api_country_names(scope)
+    if not countries:
+        raise ValueError(f"Unsupported World Bank API scope: {scope!r}")
+
+    pages = max(_MIN_PAGE_ATTEMPTS, min(int(max_pages or _MIN_PAGE_ATTEMPTS), 6))
+    rows = _WB_API_ROWS_PER_PAGE
+    multi_country = len(countries) > 1
+
+    markdown_rows: list[str] = []
+    structured_rows: list[dict] = []
+    links: list[str] = []
+    seen_links: set[str] = set()
+    seen_ids: set[str] = set()
+    api_pages_fetched = 0
+    reported_total: int | None = None
+    prefilter_stats = {"raw_seen": 0, "prefilter_kept": 0, "prefilter_dropped": 0}
+
+    for country in countries:
+        country_pages = 1 if multi_country else pages
+        for page_idx in range(country_pages):
+            offset = page_idx * rows
+            try:
+                payload = _worldbank_procnotices_fetch(country=country, offset=offset, rows=rows)
+            except Exception as exc:
+                logger.warning(
+                    "World Bank API fetch failed scope=%s country=%r offset=%s: %s",
+                    scope,
+                    country,
+                    offset,
+                    exc,
+                )
+                break
+            api_pages_fetched += 1
+            if reported_total is None and not multi_country:
+                try:
+                    reported_total = int(payload.get("total") or 0)
+                except (TypeError, ValueError):
+                    reported_total = None
+
+            notices = payload.get("procnotices") or []
+            if not notices:
+                break
+
+            for notice in notices:
+                if not isinstance(notice, dict):
+                    continue
+                notice_id = str(notice.get("id") or "").strip()
+                if notice_id and notice_id in seen_ids:
+                    continue
+                if notice_id:
+                    seen_ids.add(notice_id)
+                prefilter_stats["raw_seen"] += 1
+                if not worldbank_notice_passes_consulting_prefilter(notice):
+                    prefilter_stats["prefilter_dropped"] += 1
+                    continue
+                prefilter_stats["prefilter_kept"] += 1
+                listing = worldbank_notice_to_listing_row(notice)
+                if listing:
+                    structured_rows.append(listing)
+                row_md, detail_url = _worldbank_format_notice_row(notice)
+                if row_md:
+                    markdown_rows.append(row_md)
+                if detail_url and detail_url not in seen_links:
+                    seen_links.add(detail_url)
+                    links.append(detail_url)
+
+            if len(notices) < rows:
+                break
+
+    body = (
+        "World Bank procurement API harvest.\n\n"
+        f"Scope: {scope}\n"
+        f"Countries queried: {', '.join(countries)}\n"
+        f"API pages fetched: {api_pages_fetched}\n"
+        f"Reported total (primary country): {reported_total if reported_total is not None else 'n/a'}\n"
+        f"Raw notices scanned: {prefilter_stats['raw_seen']}\n"
+        f"Consulting pre-filter kept: {prefilter_stats['prefilter_kept']}\n"
+        f"Consulting pre-filter dropped: {prefilter_stats['prefilter_dropped']}\n\n"
+        "Description | Country | Project Title | Notice Type | Language | Published Date\n"
+        + "\n".join(markdown_rows[:400])
+    )
+    raw_json = json.dumps(
+        {
+            "scope": scope,
+            "countries": countries,
+            "reported_total": reported_total,
+            "notice_count": prefilter_stats["prefilter_kept"],
+            "prefilter_stats": prefilter_stats,
+        }
+    )
+    return body, links, raw_json, max(api_pages_fetched, 1), structured_rows, prefilter_stats
+
+
+async def _worldbank_api_harvest(
+    scope: str,
+    max_pages: int,
+) -> tuple[str, list[str], str, int, list[dict], dict[str, int]]:
+    return await asyncio.to_thread(_worldbank_api_harvest_sync, scope, max_pages)
 
 
 async def _apply_undp_region_filter(page, listing_url: str) -> str | None:
@@ -570,10 +777,18 @@ def _is_eu_tenders_portal(url: str) -> bool:
     return parsed.netloc.lower() in ("ec.europa.eu", "www.ec.europa.eu") and "funding-tenders" in parsed.path
 
 
+_EGP_BIDS_HOSTS = {
+    "egp.gov.et",
+    "www.egp.gov.et",
+    "production.egp.gov.et",
+    "www.production.egp.gov.et",
+}
+
+
 def _is_egp_bids_url(url: str) -> bool:
-    """Ethiopian eGP public bids listing."""
+    """Ethiopian eGP public bids listing (including production host)."""
     parsed = urlparse(url or "")
-    return parsed.netloc.lower() in ("egp.gov.et", "www.egp.gov.et") and "/egp/bids" in parsed.path.lower()
+    return parsed.netloc.lower() in _EGP_BIDS_HOSTS and "/egp/bids" in parsed.path.lower()
 
 
 async def _egp_click_if_visible(page, selector: str) -> bool:
@@ -632,7 +847,162 @@ async def _capture_egp_bids_listing(
     pages_budget = max(_MIN_PAGE_ATTEMPTS, min(max_pages or _MIN_PAGE_ATTEMPTS, 4))
     seen_rows: set[str] = set()
     out_rows: list[str] = []
+    seen_api_rows: set[str] = set()
+    api_rows: list[str] = []
+    api_links: list[str] = []
+    api_hits: list[str] = []
     pages_captured = 0
+
+    def _row_text_from_payload_item(item: dict) -> tuple[str | None, str | None]:
+        ref = str(
+            item.get("procurement_ref_no")
+            or item.get("procurementRefNo")
+            or item.get("reference")
+            or item.get("tenderNumber")
+            or item.get("bidNo")
+            or ""
+        ).strip()
+        lot = str(item.get("lot_no") or item.get("lotNo") or item.get("lot") or "").strip()
+        title = str(
+            item.get("procurement_title")
+            or item.get("procurementTitle")
+            or item.get("title")
+            or item.get("name")
+            or item.get("description")
+            or ""
+        ).strip()
+        entity = str(
+            item.get("procuring_entity")
+            or item.get("procuringEntity")
+            or item.get("entity")
+            or item.get("buyer")
+            or ""
+        ).strip()
+        category = str(item.get("procurement_category") or item.get("category") or "").strip()
+        market = str(item.get("market_approach") or item.get("marketApproach") or "").strip()
+        source = str(item.get("source") or "").strip()
+        deadline = str(
+            item.get("submission_deadline")
+            or item.get("submissionDeadline")
+            or item.get("deadline")
+            or item.get("closingDate")
+            or ""
+        ).strip()
+        detail_url = str(
+            item.get("detail_url")
+            or item.get("detailUrl")
+            or item.get("url")
+            or item.get("link")
+            or ""
+        ).strip()
+
+        if not title and not ref:
+            return None, None
+
+        parts = [part for part in (ref, f"Lot: {lot}" if lot else "", title, entity, category, market, source, deadline) if part]
+        row = " | ".join(parts).strip()
+        if not row:
+            return None, detail_url or None
+        return row, (detail_url or None)
+
+    def _row_text_from_sequence(values: list[object]) -> str | None:
+        parts: list[str] = []
+        for val in values:
+            if val is None:
+                continue
+            text = str(val).strip()
+            if not text:
+                continue
+            parts.append(" ".join(text.split()))
+        if len(parts) < 3:
+            return None
+        row = " | ".join(parts)
+        if len(row) < 25:
+            return None
+        return row
+
+    def _collect_rows_from_payload(payload: object) -> None:
+        stack: list[object] = [payload]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                # Process likely row-like records directly.
+                row_text, detail_link = _row_text_from_payload_item(node)
+                if row_text and row_text not in seen_api_rows:
+                    seen_api_rows.add(row_text)
+                    api_rows.append(row_text)
+                if detail_link and detail_link not in api_links and detail_link.startswith("http"):
+                    api_links.append(detail_link)
+
+                for value in node.values():
+                    if isinstance(value, (dict, list)):
+                        stack.append(value)
+            elif isinstance(node, list):
+                # Some grids return rows as arrays instead of keyed dicts.
+                if node and all(not isinstance(x, (dict, list)) for x in node):
+                    row_text = _row_text_from_sequence(node)
+                    if row_text and row_text not in seen_api_rows:
+                        seen_api_rows.add(row_text)
+                        api_rows.append(row_text)
+                for item in node:
+                    if isinstance(item, (dict, list)):
+                        stack.append(item)
+
+    def _collect_rows_from_html_fragment(fragment: str) -> None:
+        try:
+            soup = BeautifulSoup(fragment, "html.parser")
+        except Exception:
+            return
+        for tr in soup.select("table tr"):
+            cells = [c.get_text(" ", strip=True) for c in tr.select("th,td")]
+            row_text = _row_text_from_sequence(cells)
+            if row_text and row_text not in seen_api_rows:
+                seen_api_rows.add(row_text)
+                api_rows.append(row_text)
+
+    async def _capture_response_payload(resp) -> None:
+        try:
+            u = (resp.url or "").strip()
+            ul = u.lower()
+            status = int(resp.status or 0)
+            if status < 200 or status >= 400:
+                return
+            if not any(token in ul for token in ("bid", "tender", "procurement", "/api/")):
+                return
+            if u not in api_hits:
+                api_hits.append(u)
+
+            ctype = (resp.headers or {}).get("content-type", "").lower()
+            if "json" in ctype:
+                try:
+                    _collect_rows_from_payload(await resp.json())
+                    return
+                except Exception:
+                    pass
+
+            raw = await resp.text()
+            if not raw:
+                return
+
+            # JSON-like payload served with wrong content-type.
+            trimmed = raw.strip()
+            if trimmed[:1] in ("{", "["):
+                try:
+                    _collect_rows_from_payload(json.loads(trimmed))
+                    return
+                except Exception:
+                    pass
+
+            # HTML fragment/table payload fallback.
+            if "<table" in raw.lower() or "<tr" in raw.lower():
+                _collect_rows_from_html_fragment(raw)
+        except Exception:
+            return
+
+    def _on_response(resp) -> None:
+        asyncio.create_task(_capture_response_payload(resp))
+
+    page.on("response", _on_response)
 
     for page_idx in range(1, pages_budget + 1):
         rows = await page.evaluate(
@@ -689,9 +1059,32 @@ async def _capture_egp_bids_listing(
 
     page_text = await _visible_page_text(page)
     page_links = await _visible_links(page)
+    # Allow in-flight JSON handlers to complete.
+    await page.wait_for_timeout(600)
+    if not out_rows and api_rows:
+        out_rows.extend(api_rows[:500])
+    if api_links:
+        page_links.extend(api_links)
     html = await page.content()
 
     rows_md = "\n".join(f"- {row}" for row in out_rows[:400])
+    if out_rows:
+        logger.info("EGP extracted rows=%s links=%s api_hits=%s", len(out_rows), len(page_links), len(api_hits))
+    else:
+        low = page_text.lower()
+        blocked = (
+            "inspect is not allowed" in low
+            or "developer tools are not permitted" in low
+            or "close devtools" in low
+        )
+        logger.warning(
+            "EGP returned no rows (chars=%s links=%s blocked=%s api_hits=%s urls=%s)",
+            len(page_text),
+            len(page_links),
+            blocked,
+            len(api_hits),
+            api_hits[:5],
+        )
     body = (
         f"\n\n--- EGP Listing: {page.url} ---\n\n"
         f"{page_text}\n\n"
@@ -1010,6 +1403,59 @@ def _resolve_auth_selectors(monitored: MonitoredPage) -> dict[str, str]:
 async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestResult:
     """Browser work only (Playwright async). See `harvest_with_playwright` for entry."""
     listing_url = monitored.url
+    wb_scope = _worldbank_scope_filter_value(listing_url)
+    if _is_worldbank_procurement_url(listing_url) and wb_scope:
+        max_p = _max_pages_for_listing_url(listing_url)
+        try:
+            text, links, raw_json, pages_captured, structured_rows, prefilter_stats = (
+                await _worldbank_api_harvest(wb_scope, max_p)
+            )
+            logger.info(
+                "World Bank API harvest scope=%s kept=%s dropped=%s links=%s pages=%s",
+                wb_scope,
+                prefilter_stats.get("prefilter_kept", 0),
+                prefilter_stats.get("prefilter_dropped", 0),
+                len(links),
+                pages_captured,
+            )
+            return HarvestResult(
+                status="success",
+                page_url=listing_url,
+                markdown=text,
+                html=raw_json,
+                listing_urls=links,
+                detail_urls=links,
+                session_meta={
+                    "strategy": "playwright",
+                    "backend": "worldbank_procnotices_api",
+                    "structured_source": True,
+                    "char_count": len(text),
+                    "link_count": len(links),
+                    "applied_filter": f"wb_api:{wb_scope}",
+                    "pages_captured": pages_captured,
+                    "max_pages": max_p,
+                    "prefilter_stats": prefilter_stats,
+                    "listing_rows_v1": structured_rows,
+                    "raw_count": prefilter_stats.get("prefilter_kept", 0),
+                },
+            )
+        except Exception as exc:
+            logger.exception(
+                "World Bank API harvest failed for page_id=%s scope=%s",
+                getattr(monitored, "id", None),
+                wb_scope,
+            )
+            return HarvestResult(
+                status="failed",
+                page_url=listing_url,
+                error=f"World Bank API harvest failed: {exc}",
+                session_meta={
+                    "strategy": "playwright",
+                    "backend": "worldbank_procnotices_api",
+                    "applied_filter": f"wb_api:{wb_scope}",
+                },
+            )
+
     nav_url = _afdb_navigation_url(listing_url)
     login_url = getattr(monitored, "auth_login_url", None) or settings.PLAYWRIGHT_AUTH_LOGIN_URL
     user_env = getattr(monitored, "auth_username_env", None) or settings.PLAYWRIGHT_AUTH_USERNAME_ENV
@@ -1032,12 +1478,31 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
             browser = await p.chromium.launch(
                 headless=settings.PLAYWRIGHT_HEADLESS,
                 slow_mo=settings.PLAYWRIGHT_SLOW_MO_MS or 0,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ],
             )
             try:
-                context = await browser.new_context()
+                context = await browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/126.0.0.0 Safari/537.36"
+                    ),
+                    locale="en-US",
+                    timezone_id="Africa/Addis_Ababa",
+                    viewport={"width": 1366, "height": 768},
+                    extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                )
                 await context.add_init_script(
                     """
                     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                    Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+                    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
                     window.chrome = window.chrome || { runtime: {} };
                     """
                 )

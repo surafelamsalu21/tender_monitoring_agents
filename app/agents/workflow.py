@@ -198,10 +198,7 @@ class TenderAgent:
                 strict_scope
                 and (
                     "afdb.org" in page_url_for_expiry.lower()
-                    or (
-                        strict_scope == "east_africa"
-                        and "worldbank.org" in page_url_for_expiry.lower()
-                    )
+                    or "worldbank.org" in page_url_for_expiry.lower()
                 )
             )
             if settings.SKIP_EXPIRED_AFTER_AGENT1 and all_tenders and not skip_expiry_gate:

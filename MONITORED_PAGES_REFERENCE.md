@@ -17,7 +17,7 @@ Use **Page Management → Add Page** for each row. Set **Active** on, and choose
 | 11 | South Sudan Public Procurement Portal | `crawl4ai` | https://tenderportal.ppdaa.gov.ss/current-bids |
 | 12 | Djibouti Marchés Publics | `crawl4ai` | https://marchespublics.gouv.dj/marches |
 | 13 | African Union — Bids | `crawl4ai` | https://au.int/en/bids |
-| 14 | World Bank / IFC Projects | `playwright` | https://projects.worldbank.org/en/projects-operations/procurement |
+| 14 | World Bank / IFC Projects (Ethiopia only) | `playwright` | https://www.worldbank.org/en/projects-operations/procurement?srce=both&geo_scope=ethiopia |
 | 15 | IFAD (Agriculture/Rural) | `crawl4ai` | https://www.ifad.org/en/procurement |
 | 16 | FAO Procurement Notices | `crawl4ai` | https://www.fao.org/procurement/fao-procurement-process/procurement-notices/en/ |
 | 17 | Green Climate Fund (GCF) | `hybrid` | https://www.greenclimate.fund/calls |
@@ -68,8 +68,8 @@ https://marchespublics.gouv.dj/marches
 **13. African Union — Bids** — crawl4ai  
 https://au.int/en/bids  
 
-**14. World Bank / IFC Projects** — playwright  
-https://projects.worldbank.org/en/projects-operations/procurement  
+**14. World Bank / IFC Projects (Ethiopia only)** — playwright  
+https://www.worldbank.org/en/projects-operations/procurement?srce=both&geo_scope=ethiopia  
 
 **15. IFAD (Agriculture/Rural)** — crawl4ai  
 https://www.ifad.org/en/procurement  

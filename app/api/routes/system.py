@@ -32,7 +32,10 @@ _TEST_CRAWLER_PLAYWRIGHT_FALLBACK_HOSTS = {"egp.gov.et", "www.egp.gov.et"}
 
 def _force_simple_pipeline_for_page(page: MonitoredPage) -> bool:
     strategy = (getattr(page, "crawl_strategy", None) or "crawl4ai").strip().lower()
-    return strategy in {"un_careers", "eu_funding"}
+    if strategy in {"un_careers", "eu_funding"}:
+        return True
+    url = (getattr(page, "url", None) or "").lower()
+    return "worldbank.org" in url and ("geo_scope=" in url or "wb_region=" in url)
 
 # --------------------------
 # Pydantic Models

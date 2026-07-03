@@ -52,6 +52,8 @@ def listing_rows_to_tender_dicts(
         source = "UN Careers"
     elif "ec.europa.eu" in host and "funding-tenders" in (page_url or ""):
         source = "EU Funding & Tenders Portal"
+    elif "worldbank.org" in host:
+        source = "World Bank Procurement"
     for row in rows:
         title = (row.title or "").strip()
         if not title:

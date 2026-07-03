@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 _PLAYWRIGHT_SHELL_FALLBACK_HOSTS = {
     "egp.gov.et",
     "www.egp.gov.et",
+    "production.egp.gov.et",
+    "www.production.egp.gov.et",
 }
 
 
@@ -55,7 +57,24 @@ def _should_retry_with_playwright(url: str, markdown: str, listing_urls: list[st
     host = _host_for_url(url)
     if host not in _PLAYWRIGHT_SHELL_FALLBACK_HOSTS:
         return False
-    return len((markdown or "").strip()) < 300 and len(listing_urls or []) == 0
+    text = (markdown or "").strip()
+    low = text.lower()
+    if len(listing_urls or []) > 0:
+        return False
+
+    # Ethiopian eGP sometimes returns a guard shell page ("Inspect is not allowed…")
+    # whose text length is >300 but still contains no listing content.
+    blocked_markers = (
+        "inspect is not allowed",
+        "developer tools are not permitted",
+        "close devtools",
+        "inspect close devtools required",
+    )
+    if any(marker in low for marker in blocked_markers):
+        return True
+
+    # Generic tiny-shell fallback
+    return len(text) < 500
 
 
 async def harvest_for_page(page: MonitoredPage) -> HarvestResult:

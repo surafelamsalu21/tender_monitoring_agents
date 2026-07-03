@@ -42,6 +42,15 @@ def _force_simple_pipeline_for_strategy(strategy: str) -> bool:
     return strategy in {"un_careers", "eu_funding"}
 
 
+def _force_simple_pipeline_for_harvest(harvest) -> bool:
+    meta = getattr(harvest, "session_meta", None) or {}
+    if meta.get("backend") == "worldbank_procnotices_api":
+        return True
+    if meta.get("structured_source") and meta.get("listing_rows_v1"):
+        return True
+    return False
+
+
 class TenderScheduler:
     """Background scheduler with Agent 3 integration for intelligent email notifications"""
     
@@ -311,7 +320,10 @@ class TenderScheduler:
 
             crawl_artifact = crawl_artifact_from_harvest(harvest)
             pipeline_mode = (settings.PIPELINE_MODE or "simple").strip().lower()
-            force_simple_pipeline = _force_simple_pipeline_for_strategy(strategy)
+            force_simple_pipeline = (
+                _force_simple_pipeline_for_strategy(strategy)
+                or _force_simple_pipeline_for_harvest(harvest)
+            )
             if pipeline_mode in ("langgraph", "legacy"):
                 agent_md, listing_for_expiry = dual_markdown_for_agent1_and_expiry(
                     page.url,

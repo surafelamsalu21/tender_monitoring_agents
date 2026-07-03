@@ -287,8 +287,20 @@ export const apiService = {
 
   // Tenders
   getTenders: async (): Promise<Tender[]> => {
-    const data = await apiRequest('/api/v1/tenders/');
-    return data as Tender[];
+    const pageSize = 100;
+    let skip = 0;
+    const all: Tender[] = [];
+
+    // Pull all rows from paginated API to avoid UI being capped at first page.
+    while (true) {
+      const data = await apiRequest(`/api/v1/tenders/?skip=${skip}&limit=${pageSize}`);
+      const batch = data as Tender[];
+      all.push(...batch);
+      if (batch.length < pageSize) break;
+      skip += pageSize;
+    }
+
+    return all;
   },
 
   getTenderStatsSummary: async (localDayBounds?: {

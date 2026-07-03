@@ -150,7 +150,7 @@ async def run_simple_pipeline(
         strict_country
         and (
             "afdb.org" in page_url_l
-            or (strict_country == "east_africa" and "worldbank.org" in page_url_l)
+            or "worldbank.org" in page_url_l
         )
     )
     if settings.SKIP_EXPIRED_AFTER_AGENT1 and not skip_expiry_gate:
