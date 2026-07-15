@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     SMTP_USE_TLS: bool = Field(default=True, env="SMTP_USE_TLS")
     EMAIL_USER: str = Field(..., env="EMAIL_USER")
     EMAIL_PASSWORD: str = Field(..., env="EMAIL_PASSWORD")
+    # Retry failed recipient sends from transient network/SMTP errors.
+    EMAIL_RETRY_ENABLED: bool = Field(default=True, env="EMAIL_RETRY_ENABLED")
+    EMAIL_RETRY_INTERVAL_MINUTES: int = Field(
+        default=30, env="EMAIL_RETRY_INTERVAL_MINUTES"
+    )
+    EMAIL_RETRY_MAX_ATTEMPTS: int = Field(default=48, env="EMAIL_RETRY_MAX_ATTEMPTS")
 
     # Default recipient for dev-only tests (e.g. Agent 3 smoke test). Optional.
     # Legacy env names still accepted: ESG_TEAM_EMAIL, CREDIT_RATING_TEAM_EMAIL.

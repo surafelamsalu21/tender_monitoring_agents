@@ -62,6 +62,7 @@ class TenderScheduler:
         self.keyword_repo = KeywordRepository()
         self.running = False
         self.task = None
+        self.retry_task = None
         self.extraction_in_progress = False
         self.extraction_started_at: str | None = None
         self.last_extraction_at: str | None = None
@@ -101,6 +102,13 @@ class TenderScheduler:
 
         # Start periodic task
         self.task = asyncio.create_task(self._periodic_task())
+        if bool(getattr(settings, "EMAIL_RETRY_ENABLED", True)):
+            retry_minutes = int(getattr(settings, "EMAIL_RETRY_INTERVAL_MINUTES", 30))
+            logger.info(
+                "Email retry worker enabled: failed recipients retried every %s minute(s)",
+                retry_minutes,
+            )
+            self.retry_task = asyncio.create_task(self._email_retry_task())
         if bool(getattr(settings, "BACKUP_ENABLED", True)):
             logger.info(
                 "Database backup configured for post-extraction weekdays: %s",
@@ -114,6 +122,12 @@ class TenderScheduler:
             self.task.cancel()
             try:
                 await self.task
+            except asyncio.CancelledError:
+                pass
+        if self.retry_task:
+            self.retry_task.cancel()
+            try:
+                await self.retry_task
             except asyncio.CancelledError:
                 pass
         logger.info("Scheduler stopped")
@@ -196,6 +210,32 @@ class TenderScheduler:
             except Exception as e:
                 logger.error(f"Error in periodic task: {e}")
                 await asyncio.sleep(60)  # Wait 1 minute before retrying
+
+    async def _email_retry_task(self):
+        """Retry failed recipient sends at fixed intervals."""
+        while self.running:
+            try:
+                interval_minutes = max(
+                    1, int(getattr(settings, "EMAIL_RETRY_INTERVAL_MINUTES", 30))
+                )
+                await asyncio.sleep(interval_minutes * 60)
+                if not self.running:
+                    break
+                summary = await self.email_service.retry_failed_notifications()
+                if summary.get("due", 0):
+                    logger.info(
+                        "Email retry pass completed: due=%s retried=%s sent=%s failed=%s dropped=%s",
+                        summary.get("due", 0),
+                        summary.get("retried", 0),
+                        summary.get("sent", 0),
+                        summary.get("failed", 0),
+                        summary.get("dropped", 0),
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("Email retry worker error: %s", exc)
+                await asyncio.sleep(60)
     
     async def run_extraction_once(self, force: bool = False):
         """Run the extended extraction pipeline once.

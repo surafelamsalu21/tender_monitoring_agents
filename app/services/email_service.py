@@ -8,13 +8,15 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import List, Dict, Any, Optional
 from html import escape
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import json
+import hashlib
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.models.email_settings import EmailNotificationSettings
 from app.models.tender import Tender
 from app.repositories.email_settings_repository import EmailSettingsRepository
 
@@ -42,6 +44,148 @@ class EnhancedEmailService:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _retry_setting_key() -> str:
+        return "pending_email_retries"
+
+    @staticmethod
+    def _utcnow_iso() -> str:
+        return datetime.utcnow().isoformat()
+
+    def _retry_interval_minutes(self) -> int:
+        return max(1, int(getattr(settings, "EMAIL_RETRY_INTERVAL_MINUTES", 30)))
+
+    def _retry_max_attempts(self) -> int:
+        return max(1, int(getattr(settings, "EMAIL_RETRY_MAX_ATTEMPTS", 48)))
+
+    def _build_retry_key(
+        self,
+        recipient_email: str,
+        team_category: str,
+        subject: str,
+        tender_ids: List[int],
+    ) -> str:
+        payload = "|".join(
+            [
+                recipient_email.strip().lower(),
+                team_category.strip().lower(),
+                subject.strip(),
+                ",".join(str(tid) for tid in sorted(set(tender_ids))),
+            ]
+        )
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+    def _load_pending_retries(self, db: Session) -> List[Dict[str, Any]]:
+        row = (
+            db.query(EmailNotificationSettings)
+            .filter(EmailNotificationSettings.setting_key == self._retry_setting_key())
+            .first()
+        )
+        if not row or not row.setting_value:
+            return []
+        if isinstance(row.setting_value, list):
+            return list(row.setting_value)
+        return []
+
+    def _save_pending_retries(self, db: Session, items: List[Dict[str, Any]]) -> None:
+        row = (
+            db.query(EmailNotificationSettings)
+            .filter(EmailNotificationSettings.setting_key == self._retry_setting_key())
+            .first()
+        )
+        if row:
+            row.setting_value = items
+            row.updated_at = datetime.utcnow()
+        else:
+            db.add(
+                EmailNotificationSettings(
+                    setting_key=self._retry_setting_key(),
+                    setting_value=items,
+                    description=(
+                        "Queued retry payloads for failed recipient sends "
+                        "(per recipient, digest subject, and tender set)."
+                    ),
+                )
+            )
+        db.commit()
+
+    def _parse_iso_datetime(self, raw: Any) -> Optional[datetime]:
+        if not raw:
+            return None
+        text = str(raw).strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            return None
+
+    def _queue_failed_recipient_retry(
+        self,
+        db: Session,
+        *,
+        recipient_email: str,
+        team_category: str,
+        email_content: Dict[str, Any],
+        tender_ids: List[int],
+        tender_title: str,
+        error_message: str,
+    ) -> None:
+        if not bool(getattr(settings, "EMAIL_RETRY_ENABLED", True)):
+            return
+
+        subject = str(email_content.get("subject") or "Tender Notification")
+        retry_key = self._build_retry_key(
+            recipient_email=recipient_email,
+            team_category=team_category,
+            subject=subject,
+            tender_ids=tender_ids,
+        )
+
+        now = datetime.utcnow()
+        next_attempt = now + timedelta(minutes=self._retry_interval_minutes())
+        queue = self._load_pending_retries(db)
+        payload = {
+            "retry_key": retry_key,
+            "recipient_email": recipient_email,
+            "team_category": team_category,
+            "subject": subject,
+            "html_body": str(email_content.get("html_body") or ""),
+            "priority": str(email_content.get("priority") or "Medium"),
+            "tender_ids": sorted(set(int(t) for t in tender_ids if str(t).isdigit())),
+            "tender_title": tender_title[:200],
+            "attempts": 0,
+            "max_attempts": self._retry_max_attempts(),
+            "created_at": self._utcnow_iso(),
+            "last_error": error_message[:1000],
+            "last_attempt_at": self._utcnow_iso(),
+            "next_attempt_at": next_attempt.isoformat(),
+        }
+
+        replaced = False
+        for idx, item in enumerate(queue):
+            if item.get("retry_key") == retry_key:
+                payload["attempts"] = int(item.get("attempts") or 0)
+                payload["created_at"] = str(item.get("created_at") or payload["created_at"])
+                queue[idx] = payload
+                replaced = True
+                break
+        if not replaced:
+            queue.append(payload)
+
+        self._save_pending_retries(db, queue)
+        logger.info(
+            "Queued retry for failed recipient %s (next attempt at %s)",
+            recipient_email,
+            payload["next_attempt_at"],
+        )
+
+    def _remove_retry_item(self, db: Session, retry_key: str) -> None:
+        queue = self._load_pending_retries(db)
+        new_queue = [item for item in queue if item.get("retry_key") != retry_key]
+        if len(new_queue) != len(queue):
+            self._save_pending_retries(db, new_queue)
 
     def _merge_to_single_digest_composition(
         self,
@@ -192,6 +336,125 @@ class EnhancedEmailService:
         )
         return [merged]
 
+    def _send_html_email(
+        self,
+        *,
+        recipient_email: str,
+        subject: str,
+        html_body: str,
+        priority: str,
+    ) -> None:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = self.email_user
+        msg["To"] = recipient_email
+        if priority == "High":
+            msg["X-Priority"] = "1"
+            msg["Importance"] = "high"
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+        with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+            server.starttls()
+            server.login(self.email_user, self.email_password)
+            refused = server.send_message(msg)
+            if refused:
+                raise RuntimeError(f"SMTP refused recipients: {refused}")
+
+    async def retry_failed_notifications(self) -> Dict[str, Any]:
+        """
+        Retry queued recipient-level email failures (e.g. transient network/SMTP issues).
+        Retries only due items and only for recipients that previously failed.
+        """
+        summary = {"due": 0, "retried": 0, "sent": 0, "failed": 0, "dropped": 0}
+        if not bool(getattr(settings, "EMAIL_RETRY_ENABLED", True)):
+            return summary
+
+        db = SessionLocal()
+        try:
+            queue = self._load_pending_retries(db)
+            if not queue:
+                return summary
+
+            now = datetime.utcnow()
+            preferences = self.email_repo.get_notification_preferences(db)
+            if not preferences.get("send_for_new_tenders", True):
+                logger.info("Skipping retry queue: send_for_new_tenders is disabled")
+                return summary
+
+            remaining: List[Dict[str, Any]] = []
+            for item in queue:
+                next_due = self._parse_iso_datetime(item.get("next_attempt_at"))
+                if next_due and next_due > now:
+                    remaining.append(item)
+                    continue
+
+                summary["due"] += 1
+                attempts = int(item.get("attempts") or 0)
+                max_attempts = int(item.get("max_attempts") or self._retry_max_attempts())
+                recipient = str(item.get("recipient_email") or "").strip()
+                subject = str(item.get("subject") or "Tender Notification")
+                team_category = str(item.get("team_category") or "screening_opportunities")
+                priority = str(item.get("priority") or "Medium")
+                html_body = str(item.get("html_body") or "")
+
+                if not recipient or not html_body:
+                    summary["dropped"] += 1
+                    logger.warning("Dropping malformed retry item: %s", item.get("retry_key"))
+                    continue
+
+                try:
+                    summary["retried"] += 1
+                    self._send_html_email(
+                        recipient_email=recipient,
+                        subject=subject,
+                        html_body=html_body,
+                        priority=priority,
+                    )
+                    self.email_repo.log_email_notification(
+                        db=db,
+                        recipient_email=recipient,
+                        email_type="retry_new_tender",
+                        team_category=team_category,
+                        subject=subject,
+                        status="sent",
+                        tender_id=None,
+                    )
+                    summary["sent"] += 1
+                    logger.info("Retry succeeded for %s", recipient)
+                except Exception as exc:
+                    attempts += 1
+                    item["attempts"] = attempts
+                    item["last_error"] = str(exc)[:1000]
+                    item["last_attempt_at"] = self._utcnow_iso()
+                    item["next_attempt_at"] = (
+                        now + timedelta(minutes=self._retry_interval_minutes())
+                    ).isoformat()
+                    self.email_repo.log_email_notification(
+                        db=db,
+                        recipient_email=recipient,
+                        email_type="retry_new_tender",
+                        team_category=team_category,
+                        subject=subject,
+                        status="failed",
+                        error_message=str(exc),
+                        tender_id=None,
+                    )
+                    if attempts >= max_attempts:
+                        summary["dropped"] += 1
+                        logger.error(
+                            "Dropping retry item after max attempts (%s): %s",
+                            attempts,
+                            recipient,
+                        )
+                    else:
+                        remaining.append(item)
+                        summary["failed"] += 1
+
+            self._save_pending_retries(db, remaining)
+            return summary
+        finally:
+            db.close()
+
     async def send_intelligent_notifications(self, email_compositions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Sends out multiple tender notifications using AI-composed content,
@@ -316,21 +579,24 @@ class EnhancedEmailService:
             
             sent_details = []
             failed_sends = 0
-
+            ids_to_mark: List[int] = []
+            one_tid = email_content.get("tender_id") or tender_data.get("id")
+            if one_tid is not None:
+                try:
+                    ids_to_mark.append(int(one_tid))
+                except (TypeError, ValueError):
+                    logger.warning("Invalid tender_id in intelligent email composition: %r", one_tid)
+            many_ids = tender_data.get("tender_ids") or email_content.get("tender_ids") or []
+            if isinstance(many_ids, list):
+                for raw in many_ids:
+                    try:
+                        ids_to_mark.append(int(raw))
+                    except (TypeError, ValueError):
+                        continue
+            unique_ids = sorted(set(ids_to_mark))
             # Loop through recipients and send individual emails
             for recipient_email in recipient_emails:
                 try:
-                    # Assemble the email message
-                    msg = MIMEMultipart('alternative')
-                    msg['Subject'] = email_content['subject']
-                    msg['From'] = self.email_user
-                    msg['To'] = recipient_email
-
-                    # Mark as high-priority if applicable
-                    if email_content.get('priority') == 'High':
-                        msg['X-Priority'] = '1'
-                        msg['Importance'] = 'high'
-
                     # Main HTML body, plus a snippet of metadata in hidden HTML comments for audit/tracking
                     html_content = email_content['html_body']
                     html_content += f"""
@@ -342,17 +608,12 @@ class EnhancedEmailService:
                     <!-- Priority: {email_content.get('priority', 'Medium')} -->
                     <!-- Recipient: {recipient_email} -->
                     """
-
-                    html_part = MIMEText(html_content, 'html', 'utf-8')
-                    msg.attach(html_part)
-
-                    # Perform SMTP transaction
-                    with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
-                        server.starttls()
-                        server.login(self.email_user, self.email_password)
-                        refused = server.send_message(msg)
-                        if refused:
-                            raise RuntimeError(f"SMTP refused recipients: {refused}")
+                    self._send_html_email(
+                        recipient_email=recipient_email,
+                        subject=email_content['subject'],
+                        html_body=html_content,
+                        priority=email_content.get('priority', 'Medium'),
+                    )
 
                     # Log success in notification log table via repository
                     self.email_repo.log_email_notification(
@@ -374,6 +635,13 @@ class EnhancedEmailService:
                         'tender_title': td_title,
                         'team_category': team_category,
                     })
+                    recipient_retry_key = self._build_retry_key(
+                        recipient_email=recipient_email,
+                        team_category=team_category,
+                        subject=email_content.get("subject") or "Tender Notification",
+                        tender_ids=unique_ids,
+                    )
+                    self._remove_retry_item(db, recipient_retry_key)
                     logger.info(f"Email sent successfully to {recipient_email} for {team_category} team")
 
                 except Exception as e:
@@ -393,29 +661,20 @@ class EnhancedEmailService:
                         error_message=str(e),
                         tender_id=email_content.get('tender_id')
                     )
+                    self._queue_failed_recipient_retry(
+                        db,
+                        recipient_email=recipient_email,
+                        team_category=team_category,
+                        email_content=email_content,
+                        tender_ids=unique_ids,
+                        tender_title=str(tender_data.get('title') or 'Tender'),
+                        error_message=str(e),
+                    )
 
             emails_sent = len(sent_details)
             success = emails_sent > 0
 
             if success:
-                ids_to_mark: List[int] = []
-                one_tid = email_content.get("tender_id") or tender_data.get("id")
-                if one_tid is not None:
-                    try:
-                        ids_to_mark.append(int(one_tid))
-                    except (TypeError, ValueError):
-                        logger.warning("Invalid tender_id in intelligent email composition: %r", one_tid)
-
-                # Digest path: include all involved tender IDs.
-                many_ids = tender_data.get("tender_ids") or email_content.get("tender_ids") or []
-                if isinstance(many_ids, list):
-                    for raw in many_ids:
-                        try:
-                            ids_to_mark.append(int(raw))
-                        except (TypeError, ValueError):
-                            continue
-
-                unique_ids = sorted(set(ids_to_mark))
                 if unique_ids:
                     rows = db.query(Tender).filter(Tender.id.in_(unique_ids)).all()
                     for row in rows:
