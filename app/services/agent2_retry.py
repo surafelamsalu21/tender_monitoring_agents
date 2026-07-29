@@ -10,6 +10,7 @@ from app.agents.agent2 import TenderDetailAgent
 from app.agents.agent3 import EmailComposerAgent
 from app.repositories.tender_repository import TenderRepository
 from app.services.email_service import EnhancedEmailService
+from app.utils.tender_expiry import is_tender_expired
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,12 @@ async def _notify_processed_recommended_unnotified(
             continue
         detailed = _tender_repo.get_detailed_tender_by_tender_id(db, tid)
         if not detailed:
+            continue
+        # This path exists to rescue rows that were stuck, so their deadlines are
+        # the most likely in the system to have lapsed while they waited.
+        expired, reason = is_tender_expired(tender, detailed)
+        if expired:
+            logger.info("Agent 2 retry notify: skipping closed tender id=%s — %s", tid, reason)
             continue
 
         # Agent3 expects this contract from workflow/simple orchestrator.

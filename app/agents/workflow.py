@@ -188,23 +188,25 @@ class TenderAgent:
 
             expiry_dropped = 0
             # AfDB strict-country (RSS fallback) rows only carry a *publication*
-            # date, not a closing deadline, so the expiry gate would wrongly drop
-            # them. World Bank procurement listing rows can have publication /
-            # contract dates without a usable deadline as well.
-            # Skip the deadline gate for those strict-scope sources.
+            # date, not a closing deadline, and World Bank procurement rows expose
+            # publication / contract dates too — so inferring a closing date from
+            # their listing table would wrongly drop live notices. Only that
+            # heuristic is disabled for them; an explicit step3.deadline is still
+            # enforced, so notices that really have closed are dropped here.
             page_url_for_expiry = state.get("page_url") or ""
             strict_scope = required_country_from_page_url(page_url_for_expiry)
-            skip_expiry_gate = bool(
+            listing_dates_ambiguous = bool(
                 strict_scope
                 and (
                     "afdb.org" in page_url_for_expiry.lower()
                     or "worldbank.org" in page_url_for_expiry.lower()
                 )
             )
-            if settings.SKIP_EXPIRED_AFTER_AGENT1 and all_tenders and not skip_expiry_gate:
+            if settings.SKIP_EXPIRED_AFTER_AGENT1 and all_tenders:
                 all_tenders, expiry_dropped = filter_expired_agent1_items(
                     all_tenders,
                     state["listing_markdown_for_expiry"],
+                    use_listing_inference=not listing_dates_ambiguous,
                 )
                 if expiry_dropped:
                     logger.info(

@@ -19,6 +19,7 @@ from app.core.database import SessionLocal
 from app.models.email_settings import EmailNotificationSettings
 from app.models.tender import Tender
 from app.repositories.email_settings_repository import EmailSettingsRepository
+from app.utils.tender_expiry import partition_notifiable
 
 logger = logging.getLogger(__name__)
 
@@ -222,10 +223,20 @@ class EnhancedEmailService:
 
         unique_tender_ids = sorted(set(tender_ids))
         db_items: List[Dict[str, str]] = []
+        suppressed_expired = 0
 
         if unique_tender_ids:
             rows = db.query(Tender).filter(Tender.id.in_(unique_tender_ids)).all()
+            # Last line of defence: every digest funnels through here, so a closed
+            # opportunity cannot reach a recipient no matter which caller composed it.
+            rows, expired_rows = partition_notifiable(rows)
+            suppressed_expired = len(expired_rows)
+            if suppressed_expired:
+                logger.info(
+                    "Digest body: suppressed %s closed opportunity/ies", suppressed_expired
+                )
             by_id = {r.id: r for r in rows}
+            unique_tender_ids = [tid for tid in unique_tender_ids if tid in by_id]
             for tid in unique_tender_ids:
                 row = by_id.get(tid)
                 if not row:
@@ -241,8 +252,10 @@ class EnhancedEmailService:
                     }
                 )
 
-        # Fallback only when DB details are unavailable.
-        if not db_items:
+        # Fallback only when DB details are unavailable. Skipped when rows existed
+        # but were all closed, otherwise the expiry gate above would be undone by
+        # rebuilding the same tenders from the compositions.
+        if not db_items and not suppressed_expired:
             for composition in email_compositions:
                 tender_data = composition.get("tender_data") or {}
                 fallback_items.append(
@@ -257,6 +270,10 @@ class EnhancedEmailService:
                 )
 
         all_items = db_items or fallback_items
+        if not all_items:
+            logger.info("Digest body: nothing open to send, skipping the digest email")
+            return []
+
         total = len(all_items)
         list_rows = []
         for index, item in enumerate(all_items, 1):
@@ -715,6 +732,15 @@ class EnhancedEmailService:
         try:
             if not tenders:
                 logger.info(f"No tenders to notify for category: {category}")
+                return True
+
+            tenders, expired_tenders = partition_notifiable(tenders)
+            if expired_tenders:
+                logger.info(
+                    "Fallback email: suppressed %s closed opportunity/ies", len(expired_tenders)
+                )
+            if not tenders:
+                logger.info(f"No open tenders left to notify for category: {category}")
                 return True
 
             db = SessionLocal()

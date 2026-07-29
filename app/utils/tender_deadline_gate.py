@@ -107,23 +107,30 @@ def _closing_signals_expired(cell: Optional[str]) -> bool:
 def _deadline_for_item(
     item: Dict[str, Any],
     page_markdown: str,
+    use_listing_inference: bool = True,
 ) -> Tuple[str, Optional[date], bool]:
     """
     Returns (source, parsed_deadline_or_none, closed_keyword).
 
     closed_keyword True when listing cell is literally "Closed".
+
+    ``use_listing_inference=False`` drops the table-cell heuristic and trusts only
+    the explicit ``step3.deadline``. Some portals (World Bank, AfDB) put a
+    publication or contract date in the last column, which the heuristic would
+    read as a closing date and use to discard live notices.
     """
     url = (item.get("url") or "").strip()
     step3 = (item.get("screening") or {}).get("step3") or {}
     model_deadline = parse_date_flexible(step3.get("deadline"))
 
-    listing_cell = infer_listing_closing_raw(page_markdown, url)
-    if _closing_signals_expired(listing_cell):
-        return ("listing_closed_keyword", None, True)
+    if use_listing_inference:
+        listing_cell = infer_listing_closing_raw(page_markdown, url)
+        if _closing_signals_expired(listing_cell):
+            return ("listing_closed_keyword", None, True)
 
-    listing_date = parse_date_flexible(listing_cell) if listing_cell else None
-    if listing_date is not None:
-        return ("listing_date", listing_date, False)
+        listing_date = parse_date_flexible(listing_cell) if listing_cell else None
+        if listing_date is not None:
+            return ("listing_date", listing_date, False)
 
     if model_deadline is not None:
         return ("model_deadline", model_deadline, False)
@@ -135,10 +142,15 @@ def filter_expired_agent1_items(
     items: List[Dict[str, Any]],
     page_markdown: str,
     reference: Optional[date] = None,
+    use_listing_inference: bool = True,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     Drop items past closing when we can infer it from (1) listing table closing cell,
     or (2) Agent 1 step3.deadline. Unknown → keep (conservative).
+
+    Set ``use_listing_inference=False`` for portals whose listing tables expose
+    publication rather than closing dates; the explicit ``step3.deadline`` is still
+    enforced, so genuinely closed notices are dropped either way.
 
     Returns (kept, dropped_count).
     """
@@ -147,7 +159,9 @@ def filter_expired_agent1_items(
     dropped = 0
 
     for item in items:
-        source, d, closed_kw = _deadline_for_item(item, page_markdown)
+        source, d, closed_kw = _deadline_for_item(
+            item, page_markdown, use_listing_inference=use_listing_inference
+        )
 
         if closed_kw:
             logger.info(

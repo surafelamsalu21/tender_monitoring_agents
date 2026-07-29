@@ -157,19 +157,25 @@ async def run_simple_pipeline(
 
     expiry_dropped = 0
     ex_src = listing_markdown_for_expiry if listing_markdown_for_expiry.strip() else md_source
-    # AfDB strict-country (RSS fallback) rows only carry a publication date,
-    # not a closing deadline. WB East-Africa listing rows can also expose
-    # publication/contract dates without clear deadlines. Skip expiry for both.
+    # AfDB strict-country (RSS fallback) rows only carry a publication date, and WB
+    # listing rows expose publication/contract dates too, so reading their last
+    # table column as a closing date would discard live notices. Only the listing
+    # heuristic is unsafe there — an explicit step3.deadline is still honoured, so
+    # World Bank notices that really have closed no longer reach the database.
     page_url_l = (page_url or "").lower()
-    skip_expiry_gate = bool(
+    listing_dates_ambiguous = bool(
         strict_country
         and (
             "afdb.org" in page_url_l
             or "worldbank.org" in page_url_l
         )
     )
-    if settings.SKIP_EXPIRED_AFTER_AGENT1 and not skip_expiry_gate:
-        all_tenders, expiry_dropped = filter_expired_agent1_items(all_tenders, ex_src)
+    if settings.SKIP_EXPIRED_AFTER_AGENT1:
+        all_tenders, expiry_dropped = filter_expired_agent1_items(
+            all_tenders,
+            ex_src,
+            use_listing_inference=not listing_dates_ambiguous,
+        )
         if expiry_dropped:
             logger.info("Simple pipeline: expiry gate dropped %s row(s)", expiry_dropped)
 

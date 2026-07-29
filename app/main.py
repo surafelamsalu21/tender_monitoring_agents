@@ -154,13 +154,23 @@ async def trigger_manual_extraction(
     """Manually trigger tender extraction. Use force=false to respect crawl_frequency_hours."""
     if not scheduler:
         return {"error": "Scheduler not initialized"}
-    
+
+    # A cycle over many pages runs for a long time, so tell the caller instead of
+    # silently launching a second one that competes for the same tables.
+    if getattr(scheduler, "extraction_in_progress", False):
+        return {
+            "message": "Extraction already in progress",
+            "started_at": getattr(scheduler, "extraction_started_at", None),
+            "triggered": False,
+        }
+
     try:
         asyncio.create_task(scheduler.run_extraction_once(force=force))
         mode = (settings.PIPELINE_MODE or "simple").strip().lower()
         return {
             "message": "Manual extraction triggered successfully",
             "force": force,
+            "triggered": True,
             "pipeline_mode": mode,
             "hint": "simple = harvest artifact → list structure → Agent 2/3; langgraph = legacy checklist Agent 1",
         }

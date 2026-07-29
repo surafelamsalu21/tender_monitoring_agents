@@ -156,6 +156,17 @@ class Settings(BaseSettings):
     SKIP_EXPIRED_AFTER_AGENT1: bool = Field(
         default=True, env="SKIP_EXPIRED_AFTER_AGENT1")
 
+    # Notifications: never email an opportunity whose deadline has passed. The
+    # earlier gates run at extraction time, but a tender saved with a valid
+    # deadline expires while it sits in the backlog, so the send path needs its
+    # own check against today's date.
+    NOTIFY_SKIP_EXPIRED: bool = Field(
+        default=True, env="NOTIFY_SKIP_EXPIRED")
+    # Rows with no deadline anywhere are dropped once their only known date is
+    # this old. Mirrors Agent 2's ``max_days_old`` so behaviour is consistent.
+    NOTIFY_MAX_STALE_DAYS: int = Field(
+        default=90, env="NOTIFY_MAX_STALE_DAYS")
+
     # Pipeline: ``simple`` = crawler artifact → list structure → linear DB/agent steps; ``langgraph`` = legacy LangGraph + checklist Agent 1.
     PIPELINE_MODE: str = Field(default="simple", env="PIPELINE_MODE")
     AGENT1_STRUCTURE_LLM_TIMEOUT_SEC: int = Field(
@@ -178,6 +189,26 @@ class Settings(BaseSettings):
     CRAWL_INTERVAL_HOURS: int = Field(default=72, env="CRAWL_INTERVAL_HOURS")
     MAX_CONCURRENT_CRAWLS: int = Field(default=5, env="MAX_CONCURRENT_CRAWLS")
     REQUEST_TIMEOUT: int = Field(default=30, env="REQUEST_TIMEOUT")
+
+    # Scale controls for an extraction cycle. With dozens of monitored pages the
+    # cycle used to be fully sequential with no bound on any single page, so one
+    # slow portal could hold up every page behind it.
+    #
+    # Concurrency is safe at page level because tender identity (fingerprint and
+    # URL lookup) is scoped to page_id, so two pages can never race on the same
+    # row. Keep this modest: every page in flight is making LLM calls, and the
+    # provider rate limit is the real ceiling.
+    MAX_CONCURRENT_PAGES: int = Field(default=3, env="MAX_CONCURRENT_PAGES")
+    # Hard ceiling for one page (harvest + Agent 1 + Agent 2 + Agent 3). Generous
+    # enough for a page with many tenders, but bounded so a hung page cannot stall
+    # the cycle indefinitely.
+    PAGE_PROCESSING_TIMEOUT_SEC: int = Field(
+        default=1800, env="PAGE_PROCESSING_TIMEOUT_SEC")
+    # Scheduled runs honour each page's crawl_frequency_hours by default, so pages
+    # can be staggered. Set true to restore the old behaviour of crawling every
+    # active page on every scheduled tick.
+    SCHEDULED_CRAWL_FORCE_ALL_PAGES: bool = Field(
+        default=False, env="SCHEDULED_CRAWL_FORCE_ALL_PAGES")
 
     # Playwright (authenticated / JS-heavy sources) — credentials stay in .env, referenced by name
     PLAYWRIGHT_HEADLESS: bool = Field(default=True, env="PLAYWRIGHT_HEADLESS")

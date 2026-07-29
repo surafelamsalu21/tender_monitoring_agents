@@ -20,6 +20,7 @@ from app.repositories.email_settings_repository import EmailSettingsRepository
 from app.crawl.eligibility import is_monitored_page_due_for_crawl
 from app.crawl.orchestrator import harvest_for_page
 from app.utils.listing_prep import dual_markdown_for_agent1_and_expiry
+from app.utils.tender_expiry import filter_expired_compositions, partition_notifiable
 from app.pipeline.crawl_artifact import crawl_artifact_from_harvest
 from app.pipeline.progress import pipeline_tty
 from app.services.db_backup import run_scheduled_backup
@@ -203,8 +204,12 @@ class TenderScheduler:
                 )
                 await asyncio.sleep(sleep_seconds)
                 if self.running:
-                    # Scheduled tick: process all active pages (ignore per-page frequency).
-                    await self.run_extraction_once(force=True)
+                    # Scheduled ticks respect each page's crawl_frequency_hours so a
+                    # large page set can be staggered instead of all firing at once.
+                    # Manual triggers still default to force=True.
+                    await self.run_extraction_once(
+                        force=bool(getattr(settings, "SCHEDULED_CRAWL_FORCE_ALL_PAGES", False))
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -244,20 +249,43 @@ class TenderScheduler:
             force: If True, ignore per-page crawl_frequency_hours (e.g. manual trigger).
         """
         from datetime import datetime, timezone
+
+        # A cycle can run for hours with many pages, which makes it easy to trigger
+        # a second one by hand while the first is still going. Two concurrent cycles
+        # double the LLM spend and have both writing the same tables, so refuse.
+        if self.extraction_in_progress:
+            logger.warning(
+                "Extraction already in progress (started %s) — ignoring this request",
+                self.extraction_started_at,
+            )
+            return {"skipped": True, "reason": "extraction_already_in_progress"}
+
         self.extraction_in_progress = True
         self.extraction_started_at = datetime.now(timezone.utc).isoformat()
         logger.info("Starting extended tender extraction cycle with Agent 3...")
-        
-        db = SessionLocal()
+
         try:
-            # Step 1: Get active monitored pages
-            pages = self.page_repo.get_active_pages(db)
-            
-            if not pages:
+            # Step 1: Snapshot the active pages, then release the session. Page work
+            # gets its own session each so nothing holds one open for the cycle.
+            db = SessionLocal()
+            try:
+                pages = self.page_repo.get_active_pages(db)
+                page_ids = [page.id for page in pages]
+                page_names = {page.id: page.name or page.url for page in pages}
+            finally:
+                db.close()
+
+            if not page_ids:
                 logger.warning("No active monitored pages found")
                 return
-            
-            logger.info(f"Processing {len(pages)} pages (force={force})")
+
+            max_concurrent = max(1, int(getattr(settings, "MAX_CONCURRENT_PAGES", 3) or 1))
+            logger.info(
+                "Processing %s pages (force=%s, up to %s at a time)",
+                len(page_ids),
+                force,
+                max_concurrent,
+            )
             _pm = (settings.PIPELINE_MODE or "simple").strip().lower()
             if _pm in ("langgraph", "legacy"):
                 logger.info("Pipeline mode=%s (LangGraph + checklist Agent 1)", _pm)
@@ -266,36 +294,131 @@ class TenderScheduler:
                     "Pipeline mode=%s (crawler artifact → ListingStructureAgent → Agent 2/3)",
                     _pm,
                 )
-            
-            # Step 3: Process each monitored page through extended pipeline
-            total_new_tenders = 0
-            all_email_compositions = []
-            
-            for page in pages:
-                page_result = await self._process_page_extended_pipeline(db, page, force=force)
-                total_new_tenders += page_result['new_tenders_count']
-                all_email_compositions.extend(page_result['email_compositions'])
-            
-            # Step 4: Automatic catch-up for pending detail extraction so users don't
-            # need to click "Retry pending details (batch)" manually every run.
-            if total_new_tenders > 0:
-                await self._auto_retry_pending_details(db)
 
-            # Step 5: Send exactly one digest email for all currently unnotified,
-            # processed, screening-passed tenders.
-            await self._send_single_cycle_digest(db)
-            
+            # Step 2: Process pages concurrently, bounded, each isolated so one
+            # failure or timeout cannot take the rest of the cycle with it.
+            semaphore = asyncio.Semaphore(max_concurrent)
+            results = await asyncio.gather(
+                *(
+                    self._process_page_guarded(page_id, force, semaphore)
+                    for page_id in page_ids
+                ),
+                return_exceptions=True,
+            )
+
+            total_new_tenders = 0
+            all_email_compositions: List[Dict[str, Any]] = []
+            failed_pages = 0
+            for page_id, result in zip(page_ids, results):
+                if isinstance(result, BaseException):
+                    failed_pages += 1
+                    logger.error(
+                        "Page %s (%s) failed: %s",
+                        page_id,
+                        page_names.get(page_id, "?"),
+                        result,
+                    )
+                    continue
+                total_new_tenders += result.get("new_tenders_count", 0)
+                all_email_compositions.extend(result.get("email_compositions", []))
+
+            if failed_pages:
+                logger.warning("%s of %s pages failed this cycle", failed_pages, len(page_ids))
+
+            # Step 3: Tail work on a fresh short-lived session.
+            db = SessionLocal()
+            try:
+                # Automatic catch-up for pending detail extraction so users don't
+                # need to click "Retry pending details (batch)" manually every run.
+                if total_new_tenders > 0:
+                    await self._auto_retry_pending_details(db)
+
+                # Send exactly one digest email for all currently unnotified,
+                # processed, screening-passed tenders.
+                await self._send_single_cycle_digest(db)
+            finally:
+                db.close()
+
             logger.info(f"Extended extraction cycle completed - {total_new_tenders} new tenders processed with {len(all_email_compositions)} intelligent emails")
-            
+
         except Exception as e:
             logger.error(f"Error in extended extraction cycle: {e}")
         finally:
-            db.close()
             self.extraction_in_progress = False
             self.extraction_started_at = None
             self.last_extraction_at = datetime.now(timezone.utc).isoformat()
             await self._run_post_extraction_backup_if_due()
-    
+
+    async def _process_page_guarded(
+        self,
+        page_id: int,
+        force: bool,
+        semaphore: asyncio.Semaphore,
+    ) -> Dict[str, Any]:
+        """
+        Run one page with its own DB session, a concurrency slot and a hard timeout.
+
+        The page is re-loaded inside this session rather than passed in, because an
+        ORM object belongs to the session that produced it.
+        """
+        empty: Dict[str, Any] = {"new_tenders_count": 0, "email_compositions": []}
+        timeout = max(60, int(getattr(settings, "PAGE_PROCESSING_TIMEOUT_SEC", 1800) or 1800))
+
+        async with semaphore:
+            db = SessionLocal()
+            try:
+                page = self.page_repo.get_page_by_id(db, page_id)
+                if not page or not page.is_active:
+                    logger.info("Page %s is gone or inactive, skipping", page_id)
+                    return empty
+
+                try:
+                    return await asyncio.wait_for(
+                        self._process_page_extended_pipeline(db, page, force=force),
+                        timeout=timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "Page %s (%s) exceeded the %ss budget — abandoning it so the "
+                        "rest of the cycle continues",
+                        page_id,
+                        page.name or page.url,
+                        timeout,
+                    )
+                    self._fail_unfinished_crawl_log(
+                        db, page, f"Timed out after {timeout}s"
+                    )
+                    return empty
+            except Exception as exc:
+                logger.error("Page %s raised: %s", page_id, exc)
+                return empty
+            finally:
+                db.close()
+
+    def _fail_unfinished_crawl_log(
+        self, db: Session, page: MonitoredPage, message: str
+    ) -> None:
+        """Close out the crawl log and failure counters for an abandoned page."""
+        try:
+            db.rollback()
+            crawl_log = (
+                db.query(CrawlLog)
+                .filter(CrawlLog.page_id == page.id, CrawlLog.completed_at.is_(None))
+                .order_by(CrawlLog.started_at.desc())
+                .first()
+            )
+            if crawl_log:
+                crawl_log.status = "failed"
+                crawl_log.error_message = message
+                crawl_log.completed_at = datetime.utcnow()
+            page.consecutive_failures = (page.consecutive_failures or 0) + 1
+            page.last_crawled = datetime.utcnow()
+            db.commit()
+        except Exception as exc:
+            logger.error("Could not record the abandoned run for page %s: %s", page.id, exc)
+            db.rollback()
+
+
     async def _process_page_extended_pipeline(
         self, db: Session, page: MonitoredPage, force: bool = False
     ) -> Dict[str, Any]:
@@ -478,7 +601,16 @@ class TenderScheduler:
             if not email_compositions:
                 logger.info("No email compositions to send")
                 return
-            
+
+            email_compositions, expired_count = filter_expired_compositions(email_compositions)
+            if expired_count:
+                logger.info(
+                    "Intelligent digest: dropped %s closed opportunity/ies", expired_count
+                )
+            if not email_compositions:
+                logger.info("No open opportunities left to send after the expiry gate")
+                return
+
             logger.info(f"Sending {len(email_compositions)} intelligent email notifications...")
             
             # Send all intelligent notifications
@@ -523,6 +655,21 @@ class TenderScheduler:
             )
             if not unnotified_tenders:
                 logger.info("No unnotified screened opportunities found for fallback notifications")
+                return
+
+            # This query spans the whole backlog, not just this run, so rows that
+            # were live when saved may have closed since. Re-check against today.
+            # Suppressed rows keep ``is_notified=False`` on purpose: if a deadline
+            # is ever misparsed, the opportunity stays recoverable instead of being
+            # permanently marked as handled.
+            unnotified_tenders, expired_tenders = partition_notifiable(unnotified_tenders)
+            if expired_tenders:
+                logger.info(
+                    "Fallback digest: suppressed %s closed opportunity/ies", len(expired_tenders)
+                )
+
+            if not unnotified_tenders:
+                logger.info("No open screened opportunities left to notify after the expiry gate")
                 return
 
             logger.info(
@@ -586,6 +733,19 @@ class TenderScheduler:
             )
             if not tenders:
                 logger.info("No unnotified processed screened tenders found for cycle digest")
+                return
+
+            # The backlog is not time-bounded: anything that waited on an Agent 2
+            # retry, or on a send that failed, may have closed in the meantime.
+            # Filter on ORM rows rather than compositions, because the row still
+            # has the detail-page deadline and the listing deadline to consult.
+            tenders, expired_tenders = partition_notifiable(tenders)
+            if expired_tenders:
+                logger.info(
+                    "Cycle digest: suppressed %s closed opportunity/ies", len(expired_tenders)
+                )
+            if not tenders:
+                logger.info("No open screened opportunities left for the cycle digest")
                 return
 
             logger.info(
