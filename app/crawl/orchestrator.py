@@ -49,32 +49,50 @@ def _host_for_url(url: str) -> str:
     return (urlparse(url or "").netloc or "").lower()
 
 
-def _should_retry_with_playwright(url: str, markdown: str, listing_urls: list[str]) -> bool:
+def _is_shell_capture(markdown: str, listing_urls: list[str]) -> bool:
     """
     Heuristic: some JS-heavy pages look successful to crawl4ai but only return
     a tiny shell (very small markdown and no links).
+
+    Applies to any host. Restricting this to a hardcoded allowlist meant a new
+    JS-rendered portal silently reported a successful crawl with no content,
+    which is indistinguishable from "no opportunities this week".
     """
-    host = _host_for_url(url)
-    if host not in _PLAYWRIGHT_SHELL_FALLBACK_HOSTS:
-        return False
     text = (markdown or "").strip()
     low = text.lower()
-    if len(listing_urls or []) > 0:
-        return False
 
-    # Ethiopian eGP sometimes returns a guard shell page ("Inspect is not allowed…")
-    # whose text length is >300 but still contains no listing content.
+    # Anti-bot / devtools guard pages can exceed the length threshold while still
+    # containing no listing content.
     blocked_markers = (
         "inspect is not allowed",
         "developer tools are not permitted",
         "close devtools",
         "inspect close devtools required",
+        "enable javascript",
+        "javascript is required",
+        "please enable js",
+        "checking your browser",
+        "verify you are human",
     )
     if any(marker in low for marker in blocked_markers):
         return True
 
-    # Generic tiny-shell fallback
+    if len(listing_urls or []) > 0:
+        return False
+
     return len(text) < 500
+
+
+def _should_retry_with_playwright(url: str, markdown: str, listing_urls: list[str]) -> bool:
+    """Whether a crawl4ai capture is weak enough to justify a Playwright retry."""
+    if not _is_shell_capture(markdown, listing_urls):
+        return False
+    # Hosts known to need a browser are always retried; everything else is
+    # retried too, but the known set is kept for logging clarity.
+    host = _host_for_url(url)
+    if host in _PLAYWRIGHT_SHELL_FALLBACK_HOSTS:
+        logger.info("crawl4ai shell capture on known JS-heavy host %s", host)
+    return True
 
 
 async def harvest_for_page(page: MonitoredPage) -> HarvestResult:
@@ -128,6 +146,29 @@ async def harvest_for_page(page: MonitoredPage) -> HarvestResult:
                 url,
                 playwright_result.error,
             )
+
+        shell_capture = _is_shell_capture(markdown, listing_urls)
+        if shell_capture and len((markdown or "").strip()) < 200:
+            # An all-but-empty capture reported as success is indistinguishable
+            # from a genuinely quiet week. Fail it so the crawl log records the
+            # reason and the page's consecutive_failures counter moves.
+            return HarvestResult(
+                status="failed",
+                page_url=url,
+                error=(
+                    f"Empty capture after crawl4ai and Playwright "
+                    f"({len((markdown or '').strip())} chars, {len(listing_urls)} links)"
+                ),
+                session_meta={"strategy": "crawl4ai", "shell_capture": True},
+            )
+        if shell_capture:
+            logger.warning(
+                "Harvest for %s looks shell-like (%s chars, %s links) — downstream yield may be zero.",
+                url,
+                len((markdown or "").strip()),
+                len(listing_urls),
+            )
+
         return HarvestResult(
             status="success",
             page_url=url,
@@ -140,6 +181,7 @@ async def harvest_for_page(page: MonitoredPage) -> HarvestResult:
                 "char_count": scrape.get("char_count", 0) or len(markdown),
                 "pages_attempted": 1,
                 "max_pages": 1,
+                "shell_capture": shell_capture,
             },
         )
 

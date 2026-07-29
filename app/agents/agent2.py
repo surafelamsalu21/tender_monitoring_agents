@@ -7,10 +7,11 @@ import json
 import re
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 import asyncio
 from langchain_core.messages import HumanMessage
 
+from app.core.config import settings
 from app.core.llm_factory import get_chat_llm
 from app.services.scraper import TenderScraper
 from app.agents.page_sanity import (
@@ -24,6 +25,12 @@ from app.utils.url_normalize import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _full_content_limit() -> int:
+    """Cap for the raw page text persisted on the detail row."""
+    return int(getattr(settings, "AGENT2_FULL_CONTENT_MAX_CHARS", 60_000) or 60_000)
+
 
 class TenderDetailAgent:
     """
@@ -227,6 +234,10 @@ class TenderDetailAgent:
             text = await self._scrape_un_careers_detail_api(tender_url)
             if text:
                 return text, 200
+        if self._looks_like_downloadable_text_document_url(tender_url):
+            doc_text = await self._scrape_document_direct(tender_url)
+            if doc_text:
+                return doc_text, 200
 
         try:
             logger.info(f"Scraping tender page: {tender_url}")
@@ -252,6 +263,14 @@ class TenderDetailAgent:
                             "Agent 2: PDF crawl shell for %s; direct PDF fallback returned no text",
                             tender_url,
                         )
+                    if self._looks_like_downloadable_text_document_url(tender_url) and self._looks_minimal_or_blocked(content):
+                        doc_text = await self._scrape_document_direct(tender_url)
+                        if doc_text:
+                            return doc_text, code
+                        logger.warning(
+                            "Agent 2: document crawl shell for %s; direct document fallback returned no text",
+                            tender_url,
+                        )
                     logger.info(
                         "Successfully scraped %s characters from %s",
                         len(content),
@@ -267,6 +286,15 @@ class TenderDetailAgent:
                             return pdf_text, code
                         logger.warning(
                             "Agent 2: scrape failed for PDF %s (%s); direct PDF fallback returned no text",
+                            tender_url,
+                            error,
+                        )
+                    if self._should_try_direct_document_fallback(tender_url, error):
+                        doc_text = await self._scrape_document_direct(tender_url)
+                        if doc_text:
+                            return doc_text, code
+                        logger.warning(
+                            "Agent 2: scrape failed for document %s (%s); direct document fallback returned no text",
                             tender_url,
                             error,
                         )
@@ -592,6 +620,13 @@ class TenderDetailAgent:
             or "minimal_text" in txt
         )
 
+    @staticmethod
+    def _looks_like_downloadable_text_document_url(url: str) -> bool:
+        """True when URL points to a downloadable text-bearing document (e.g. DOCX)."""
+        path = unquote(urlparse(str(url or "")).path or "").lower()
+        path = re.sub(r"\s+", "", path)
+        return path.endswith((".docx", ".txt", ".rtf", ".odt"))
+
     async def _scrape_pdf_direct(self, url: str) -> Optional[str]:
         """Direct PDF extraction fallback for URLs that are PDF files."""
         candidates = fetch_url_candidates(url)
@@ -659,6 +694,129 @@ class TenderDetailAgent:
                     exc,
                 )
         return None
+
+    async def _scrape_document_direct(self, url: str) -> Optional[str]:
+        """
+        Direct extraction fallback for downloadable text documents.
+        Currently supports DOCX, TXT, RTF, and ODT.
+        """
+        candidates = fetch_url_candidates(url)
+        if not candidates:
+            return None
+
+        def _normalize_text(text: str) -> str:
+            text = text.replace("\r", "\n")
+            text = re.sub(r"[ \t]+", " ", text)
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            return text.strip()
+
+        def _extract_from_docx(raw: bytes) -> str:
+            import html as html_lib
+            import io
+            import zipfile
+
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                xml = archive.read("word/document.xml").decode("utf-8", errors="ignore")
+            xml = re.sub(r"</w:p>", "\n", xml)
+            xml = re.sub(r"<[^>]+>", " ", xml)
+            return _normalize_text(html_lib.unescape(xml))
+
+        def _extract_from_odt(raw: bytes) -> str:
+            import html as html_lib
+            import io
+            import zipfile
+
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                xml = archive.read("content.xml").decode("utf-8", errors="ignore")
+            xml = re.sub(r"</text:p>", "\n", xml)
+            xml = re.sub(r"<[^>]+>", " ", xml)
+            return _normalize_text(html_lib.unescape(xml))
+
+        def _extract_from_rtf(raw: bytes) -> str:
+            data = raw.decode("utf-8", errors="ignore")
+            data = re.sub(r"\\'[0-9a-fA-F]{2}", " ", data)
+            data = re.sub(r"\\par[d]?", "\n", data)
+            data = re.sub(r"\\[a-zA-Z]+\d* ?", " ", data)
+            data = re.sub(r"[{}]", " ", data)
+            return _normalize_text(data)
+
+        def _read_document(candidate_url: str) -> tuple[Optional[str], str]:
+            import requests
+
+            resp = requests.get(
+                candidate_url,
+                timeout=30,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": (
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
+                        "application/vnd.oasis.opendocument.text,"
+                        "application/rtf,text/plain,application/octet-stream,*/*"
+                    ),
+                },
+                allow_redirects=True,
+            )
+            if resp.status_code >= 400:
+                return None, f"HTTP {resp.status_code}"
+
+            ctype = str(resp.headers.get("content-type", "")).lower()
+            path = unquote(urlparse(candidate_url).path or "").lower()
+            path = re.sub(r"\s+", "", path)
+            raw = resp.content
+            text = ""
+
+            try:
+                if path.endswith(".docx") or "officedocument.wordprocessingml.document" in ctype:
+                    text = _extract_from_docx(raw)
+                elif path.endswith(".odt") or "application/vnd.oasis.opendocument.text" in ctype:
+                    text = _extract_from_odt(raw)
+                elif path.endswith(".rtf") or "rtf" in ctype:
+                    text = _extract_from_rtf(raw)
+                elif path.endswith(".txt") or ctype.startswith("text/plain"):
+                    text = _normalize_text(resp.text or "")
+                else:
+                    return None, f"unsupported content-type={ctype or 'unknown'}"
+            except Exception as exc:
+                return None, f"extractor error: {exc}"
+
+            if not text:
+                return None, "empty text extraction"
+            if len(text) <= 120:
+                return None, f"text too short ({len(text)} chars)"
+            return text, "ok"
+
+        for candidate in candidates:
+            try:
+                text, detail = await asyncio.to_thread(_read_document, candidate)
+                if text:
+                    logger.info(
+                        "Agent 2: direct document fallback extracted %s chars from %s (via %s)",
+                        len(text),
+                        url,
+                        candidate,
+                    )
+                    return text
+                logger.info(
+                    "Agent 2: direct document fallback miss for %s (%s)",
+                    candidate,
+                    detail,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Agent 2: direct document fallback failed for %s: %s",
+                    candidate,
+                    exc,
+                )
+        return None
+
+    def _should_try_direct_document_fallback(self, url: str, error: str) -> bool:
+        if self._looks_like_downloadable_text_document_url(url):
+            return True
+        low = str(error or "").lower()
+        return "download is starting" in low
 
     def _should_use_playwright_detail_fallback(self, url: str, error: str) -> bool:
         if not self._is_undp_url(url):
@@ -819,6 +977,101 @@ class TenderDetailAgent:
                     return False
         return True
 
+    @staticmethod
+    def _truncate_for_llm(page_content: str) -> str:
+        """
+        Cap the detail page before it reaches the provider.
+
+        Tender packs and long PDFs regularly run past a model's context window.
+        The head holds the notice itself; the tail is kept because submission
+        deadlines and contact blocks are usually near the end of a document.
+        """
+        body = page_content or ""
+        max_chars = int(getattr(settings, "AGENT2_MAX_INPUT_CHARS", 120_000) or 120_000)
+        if max_chars <= 0 or len(body) <= max_chars:
+            return body
+
+        tail_chars = min(8_000, max_chars // 4)
+        head_chars = max_chars - tail_chars
+        omitted = len(body) - max_chars
+        logger.info(
+            "Agent 2: truncated detail content %s → %s chars (%s omitted)",
+            len(body),
+            max_chars,
+            omitted,
+        )
+        return (
+            body[:head_chars]
+            + f"\n\n[... {omitted:,} characters omitted ...]\n\n"
+            + body[-tail_chars:]
+        )
+
+    @staticmethod
+    def _is_transient_llm_error(exc: Exception) -> bool:
+        """True for provider errors that are worth retrying."""
+        if isinstance(exc, asyncio.TimeoutError):
+            return True
+        text = f"{type(exc).__name__} {exc}".lower()
+        markers = (
+            "rate limit",
+            "rate_limit",
+            "429",
+            "overloaded",
+            "529",
+            "500",
+            "502",
+            "503",
+            "504",
+            "timeout",
+            "timed out",
+            "connection",
+            "temporarily unavailable",
+            "service unavailable",
+            "apiconnectionerror",
+            "internalservererror",
+        )
+        return any(marker in text for marker in markers)
+
+    async def _invoke_llm_with_retry(self, messages: List[Any]) -> Optional[str]:
+        """
+        Call the LLM with a per-attempt timeout and exponential backoff.
+
+        Returns the response text, or ``None`` when every attempt failed. Running
+        against a hosted API over the public internet makes transient 429s and
+        dropped connections routine, and without this a single blip silently cost
+        the tender its detail extraction.
+        """
+        timeout = int(getattr(settings, "AGENT2_LLM_TIMEOUT_SEC", 240) or 240)
+        max_attempts = max(1, int(getattr(settings, "AGENT2_LLM_MAX_ATTEMPTS", 3) or 3))
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = await asyncio.wait_for(
+                    self.llm.ainvoke(messages), timeout=timeout
+                )
+                return str(response.content).strip()
+            except Exception as exc:
+                transient = self._is_transient_llm_error(exc)
+                if not transient or attempt == max_attempts:
+                    logger.error(
+                        "Agent 2: LLM call failed on attempt %s/%s (%s): %s",
+                        attempt,
+                        max_attempts,
+                        "transient" if transient else "permanent",
+                        exc,
+                    )
+                    return None
+                backoff = min(30.0, 2.0 ** attempt)
+                logger.warning(
+                    "Agent 2: transient LLM error on attempt %s/%s (%s); retrying in %.1fs",
+                    attempt,
+                    max_attempts,
+                    exc,
+                    backoff,
+                )
+                await asyncio.sleep(backoff)
+        return None
+
     async def _extract_detailed_info_with_dates(
         self,
         page_content: str,
@@ -831,7 +1084,8 @@ class TenderDetailAgent:
         """
         try:
             system_prompt = self._build_enhanced_detail_extraction_prompt()
-            
+            prompt_content = self._truncate_for_llm(page_content)
+
             user_message = f"""
 BASIC TENDER INFORMATION (from Agent 1):
 =======================================
@@ -848,7 +1102,7 @@ Date Status: {basic_tender.get('date_status', 'unknown')}
 
 FULL TENDER PAGE CONTENT:
 ========================
-{page_content}
+{prompt_content}
 ========================
 
 Current Date: {datetime.now().strftime('%Y-%m-%d')}
@@ -861,9 +1115,13 @@ Return ONLY the JSON object with no additional text.
                 HumanMessage(content=f"{system_prompt}\n\n{user_message}")
             ]
             
-            response = await self.llm.ainvoke(messages)
-            response_text = response.content.strip()
-            
+            response_text = await self._invoke_llm_with_retry(messages)
+            if response_text is None:
+                return {
+                    "extraction_status": "failed",
+                    "error_message": "LLM call failed after retries",
+                }
+
             # Parse JSON response
             detailed_info = self._parse_detail_response(response_text)
 
@@ -885,7 +1143,7 @@ Return ONLY the JSON object with no additional text.
                 detailed_info["page_content_length"] = len(page_content)
                 detailed_info["source_url"] = basic_tender.get("url")
                 if not detailed_info.get("full_content"):
-                    detailed_info["full_content"] = page_content[:400_000]
+                    detailed_info["full_content"] = page_content[:_full_content_limit()]
 
                 bad = markdown_indicates_error_or_empty_notice(
                     page_content, http_status=page_http_status
@@ -913,7 +1171,7 @@ Return ONLY the JSON object with no additional text.
                     heur["extracted_at"] = datetime.utcnow().isoformat()
                     heur["page_content_length"] = len(page_content)
                     heur["source_url"] = basic_tender.get("url")
-                    heur["full_content"] = page_content[:400_000]
+                    heur["full_content"] = page_content[:_full_content_limit()]
                     heur["extraction_status"] = "heuristic"
                     if self._detail_missing_substance(heur):
                         return None
@@ -1163,11 +1421,92 @@ QUALITY RULES:
             'source_url': basic_tender.get('url', 'N/A')
         }
     
+    def _create_listing_only_details(
+        self, basic_tender: Dict[str, Any], error_message: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Degrade to the listing row when the detail page cannot be read.
+
+        Some portals serve detail pages that are impossible to harvest — UNDP's
+        ``view_negotiation.cfm`` returns an anti-bot stub, World Bank's detail
+        route renders client-side. Agent 1 already captured a usable title,
+        summary, deadline and country for those notices, so discarding all of it
+        and marking the tender failed loses a real opportunity over a fetch
+        problem. Returns ``None`` when the listing row has too little to stand on
+        its own, leaving the hard-failure path in charge.
+        """
+        if not getattr(settings, "AGENT2_LISTING_FALLBACK_ENABLED", True):
+            return None
+
+        screening = basic_tender.get("screening") or {}
+        step3 = screening.get("step3") or {}
+
+        title = str(basic_tender.get("title") or "").strip()
+        description = str(basic_tender.get("description") or "").strip()
+        deadline = str(step3.get("deadline") or basic_tender.get("date") or "").strip()
+
+        # Needs a title plus at least one substantive field to be worth emailing.
+        if not title or not (description or deadline):
+            return None
+
+        source = str(step3.get("source") or "").strip()
+        country = str(step3.get("country") or "").strip()
+        link = str(step3.get("link") or basic_tender.get("url") or "").strip()
+        budget = step3.get("estimated_budget")
+
+        summary = description or "No summary captured from the listing."
+        if country:
+            summary = f"{summary}\n\nCountry: {country}"
+        summary = (
+            f"{summary}\n\nThe detail page could not be read "
+            f"({error_message}), so this record comes from the listing entry only. "
+            f"Open the link for the full notice."
+        )
+
+        return {
+            "detailed_title": title,
+            "detailed_description": summary,
+            "requirements": "Not captured — see the original notice.",
+            "deadline": deadline or None,
+            "submission_deadline": deadline or None,
+            "tender_value": str(budget).strip() if budget else None,
+            "duration": None,
+            "contact_info": {
+                "organization": source or "Not available",
+                "contact_person": None,
+                "phone": None,
+                "email": None,
+                "address": country or None,
+            },
+            "documents_required": "Not captured — see the original notice.",
+            "evaluation_criteria": "Not captured — see the original notice.",
+            "additional_details": (
+                "Listing-only record: the detail page was unreachable or contained "
+                "no notice content."
+            ),
+            "tender_type": str(step3.get("type") or "").strip() or None,
+            "procurement_method": None,
+            "categories": None,
+            "extracted_at": datetime.utcnow().isoformat(),
+            "extraction_status": "listing_only",
+            "detail_fetch_error": error_message,
+            "source_url": link or basic_tender.get("url", "N/A"),
+        }
+
     def _create_fallback_details(self, basic_tender: Dict[str, Any], error_message: str) -> Dict[str, Any]:
         """
         Returns a minimal tender info structure in the event extraction totally fails.
         Ensures program execution can continue and errors are fully annotated for debugging.
         """
+        listing_only = self._create_listing_only_details(basic_tender, error_message)
+        if listing_only:
+            logger.info(
+                "Agent 2: falling back to listing data for %s (%s)",
+                str(basic_tender.get("url") or "")[:80],
+                error_message,
+            )
+            return listing_only
+
         return {
             'detailed_title': basic_tender.get('title', 'N/A'),
             'detailed_description': f"Detailed extraction failed: {error_message}",

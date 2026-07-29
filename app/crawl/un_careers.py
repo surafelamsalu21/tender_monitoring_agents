@@ -165,6 +165,7 @@ async def harvest_un_careers(page: MonitoredPage) -> HarvestResult:
     filter_config = filter_config_from_url(source_url)
     all_rows: list[dict[str, Any]] = []
     detail_urls: list[str] = []
+    seen_detail_urls: set[str] = set()
     pages_fetched = 0
     pages_budget = max(_MIN_PAGE_ATTEMPTS, _MAX_PAGES)
 
@@ -192,13 +193,26 @@ async def harvest_un_careers(page: MonitoredPage) -> HarvestResult:
             if not isinstance(items, list) or not items:
                 break
 
+            new_rows = 0
             for item in items:
                 if not isinstance(item, dict):
                     continue
                 listing = _row_to_listing(item)
-                if listing:
-                    all_rows.append(listing)
-                    detail_urls.append(str(listing["detail_url"]))
+                if not listing:
+                    continue
+                detail_url = str(listing["detail_url"])
+                # The page budget forces a minimum number of requests, so a
+                # single-page result set (or an API that ignores the pagination
+                # block) would otherwise repeat the same openings.
+                if detail_url in seen_detail_urls:
+                    continue
+                seen_detail_urls.add(detail_url)
+                all_rows.append(listing)
+                detail_urls.append(detail_url)
+                new_rows += 1
+
+            if not new_rows:
+                break
 
             total_count = int(data.get("count") or data.get("totalCount") or 0) if isinstance(data, dict) else 0
             if total_count and len(all_rows) >= total_count and pages_fetched >= _MIN_PAGE_ATTEMPTS:

@@ -171,6 +171,7 @@ async def harvest_eu_funding(page: MonitoredPage) -> HarvestResult:
     page_size = max(1, min(page_size, 100))
     rows: list[dict[str, Any]] = []
     detail_urls: list[str] = []
+    seen_detail_urls: set[str] = set()
     pages_fetched = 0
     pages_budget = max(_MIN_PAGE_ATTEMPTS, _MAX_PAGES)
 
@@ -191,13 +192,26 @@ async def harvest_eu_funding(page: MonitoredPage) -> HarvestResult:
             results = body.get("results") if isinstance(body.get("results"), list) else []
             if not results:
                 break
+            new_rows = 0
             for result in results:
                 if not isinstance(result, dict):
                     continue
                 listing = _result_to_listing(result)
-                if listing:
-                    rows.append(listing)
-                    detail_urls.append(str(listing["detail_url"]))
+                if not listing:
+                    continue
+                detail_url = str(listing["detail_url"])
+                # The page budget forces a minimum number of requests, so a
+                # single-page result set (or an API that ignores the page
+                # parameter) would otherwise repeat the same notices.
+                if detail_url in seen_detail_urls:
+                    continue
+                seen_detail_urls.add(detail_url)
+                rows.append(listing)
+                detail_urls.append(detail_url)
+                new_rows += 1
+
+            if not new_rows:
+                break
 
             total = int(body.get("totalResults") or 0)
             if total and len(rows) >= total and pages_fetched >= _MIN_PAGE_ATTEMPTS:

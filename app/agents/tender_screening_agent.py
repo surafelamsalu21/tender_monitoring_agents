@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.agents.llm_json_io import extract_message_text, parse_json_array
 from app.core.config import settings
 from app.core.llm_factory import get_chat_llm
+from app.utils.geo_filter import geo_priority
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,9 @@ CRITICAL — "Productive Use of Energy (PUE)" vs water projects:
 Screening rule:
 - A relevant opportunity must score at least 3 YES out of 5.
 - Set passes=true only when yes_count>=3. Set passes=false for 0, 1, or 2 YES.
-- Geography is a hard gate: passes MUST be false when geographic_fit is false, even if yes_count>=3.
+- The `flags` object is what actually decides the outcome — it is re-checked downstream, so set each flag to what the text supports rather than working backwards from a desired verdict.
+- Three flags are mandatory: geographic_fit, mission_alignment, and eligibility. If any of them is false the opportunity is rejected regardless of the others.
+- At least one of sector_relevance or activity_fit must also be true. A notice that is merely "a consultancy in Ethiopia" with no identifiable sector or advisory activity does NOT qualify.
 
 How to score honestly:
 - Each criterion is YES ONLY when there is concrete textual evidence in the title or description.
@@ -127,16 +130,32 @@ def _merge_legacy_screening(
         "geographic_fit": bool(flags.get("geographic_fit")),
         "eligibility_quick_check": bool(flags.get("eligibility", flags.get("eligibility_quick_check"))),
     }
+    # Always derive the count from the flags. The model's own arithmetic drifts
+    # from the flags it just set, which used to let a row through on a claimed
+    # yes_count while the individual criteria said otherwise.
+    yes_count = sum(1 for v in step1.values() if v)
     yes_llm = row.get("yes_count")
-    if isinstance(yes_llm, int) and 0 <= yes_llm <= 5:
-        yes_count = yes_llm
-    else:
-        yes_count = sum(1 for v in step1.values() if v)
+    if isinstance(yes_llm, int) and yes_llm != yes_count:
+        logger.info(
+            "Screening: model yes_count=%s disagrees with flags (%s) for %r — using flags",
+            yes_llm,
+            yes_count,
+            str(item.get("title") or "")[:80],
+        )
 
+    # Derive the verdict too, rather than trusting row["passes"].
+    # Geography, mission alignment and firm eligibility are mandatory; the
+    # sector/activity requirement is configurable because it lifts the effective
+    # bar from 3-of-5 to 4-of-5.
     geographic_fit = bool(step1.get("geographic_fit"))
-    passes = bool(row.get("passes", yes_count >= 3))
-    # Enforce geography as a hard gate regardless of model drift.
-    passes = passes and geographic_fit
+    passes = (
+        yes_count >= 3
+        and geographic_fit
+        and bool(step1.get("mission_alignment"))
+        and bool(step1.get("eligibility_quick_check"))
+    )
+    if passes and getattr(settings, "SCREENING_REQUIRE_SECTOR_OR_ACTIVITY", True):
+        passes = bool(step1.get("sector_relevance")) or bool(step1.get("activity_fit"))
 
     engagement_raw = str(row.get("engagement") or "").strip().lower().replace("-", "_")
     engagement_token: Optional[str] = None
@@ -166,6 +185,13 @@ def _merge_legacy_screening(
         "step1": step1,
         "yes_count": yes_count,
         "passes_filter": passes and not unrelated,
+        # Preference signal only (1=Ethiopia, 2=East Africa, 3=regional) — used
+        # for ordering, never for filtering.
+        "geo_priority": geo_priority(
+            country,
+            title=str(item.get("title") or ""),
+            description=str(item.get("description") or ""),
+        ),
         "step2": {
             "opportunity_characteristics": [],
             "strategic_signals": strategic_signals,

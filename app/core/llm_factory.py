@@ -30,6 +30,8 @@ def get_chat_llm(temperature: float = 0.1, *, ollama_format: Optional[str] = Non
             model=settings.ANTHROPIC_MODEL,
             api_key=settings.ANTHROPIC_API_KEY,
             temperature=temperature,
+            timeout=settings.LLM_REQUEST_TIMEOUT_SEC,
+            max_retries=settings.LLM_MAX_RETRIES,
         )
 
     if provider == "openai":
@@ -41,6 +43,8 @@ def get_chat_llm(temperature: float = 0.1, *, ollama_format: Optional[str] = Non
             model=settings.OPENAI_MODEL,
             api_key=settings.OPENAI_API_KEY,
             temperature=temperature,
+            timeout=settings.LLM_REQUEST_TIMEOUT_SEC,
+            max_retries=settings.LLM_MAX_RETRIES,
         )
 
     if provider == "ollama":

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -14,10 +15,12 @@ from app.pipeline.legacy_adapter import listing_rows_to_tender_dicts
 from app.pipeline.progress import active_llm_label, pipeline_tty
 from app.pipeline.schemas import CrawlArtifactV1, ListingRowV1
 from app.utils.geo_filter import (
+    geo_priority,
     is_geography_allowed,
     is_specific_country_allowed,
     required_country_from_page_url,
 )
+from app.utils.scope_filter import is_individual_only_role, is_works_supervision_only
 from app.utils.tender_deadline_gate import filter_expired_agent1_items
 
 logger = logging.getLogger(__name__)
@@ -47,7 +50,11 @@ def _is_ea_policy_advisory_allowance(tender: Dict[str, Any]) -> bool:
         return False
     if not any(term in hay for term in _EA_POLICY_TERMS):
         return False
-    if any(bad in hay for bad in ("supply", "equipment", "construction", "works supervision")):
+    # "supply" on its own also matches "supply chain", which is ordinary value
+    # chain language in exactly the notices this allowance exists to rescue.
+    if re.search(r"\bsupply\b(?!\s+chain)", hay):
+        return False
+    if any(bad in hay for bad in ("equipment", "construction", "works supervision")):
         return False
     return True
 
@@ -271,6 +278,26 @@ async def run_simple_pipeline(
             )
             logger.info("Simple pipeline: eligibility gate dropped %s tender(s)", elig_dropped)
 
+    # Sector / activity focus gate.
+    # Mission alignment, geography and eligibility are broad enough that a
+    # vaguely-worded "development consultancy in Ethiopia" satisfies all three.
+    # Require at least one of the two criteria that actually identify the work as
+    # Precise's kind of advisory assignment. OR rather than AND, so a notice that
+    # names a relevant sector OR a relevant activity still gets through.
+    if all_tenders and settings.SCREENING_REQUIRE_SECTOR_OR_ACTIVITY:
+        focus_before = len(all_tenders)
+        all_tenders = [
+            tender for tender in all_tenders
+            if bool((tender.get("screening") or {}).get("step1", {}).get("sector_relevance"))
+            or bool((tender.get("screening") or {}).get("step1", {}).get("activity_fit"))
+        ]
+        focus_dropped = focus_before - len(all_tenders)
+        if focus_dropped:
+            pipeline_tty(
+                f"[PIPELINE] .... │ focus gate dropped {focus_dropped} tender(s) with no sector/activity fit"
+            )
+            logger.info("Simple pipeline: focus gate dropped %s tender(s)", focus_dropped)
+
     # Supply-only gate.
     # Precise works on consulting/TA/BDS/research — not on goods procurement.
     if all_tenders:
@@ -289,12 +316,54 @@ async def run_simple_pipeline(
             )
             logger.info("Simple pipeline: supply gate dropped %s tender(s)", supply_dropped)
 
+    # Deterministic scope nets.
+    # Rule-based backstops for the two cases the checklist calls out repeatedly
+    # but the model still mislabels: assignments addressed to an individual
+    # person (a firm cannot bid) and civil-works supervision advertised as
+    # "consultancy services". Both are narrow by design — see scope_filter.
+    if all_tenders:
+        scope_before = len(all_tenders)
+        all_tenders = [
+            tender for tender in all_tenders
+            if not is_individual_only_role(
+                tender.get("title", ""), tender.get("description", "")
+            )
+            and not is_works_supervision_only(
+                tender.get("title", ""), tender.get("description", "")
+            )
+        ]
+        scope_dropped = scope_before - len(all_tenders)
+        if scope_dropped:
+            pipeline_tty(
+                f"[PIPELINE] .... │ scope net dropped {scope_dropped} individual-only/works tender(s)"
+            )
+            logger.info("Simple pipeline: scope net dropped %s tender(s)", scope_dropped)
+
     if not all_tenders:
         logger.info("Simple pipeline: nothing relevant after checklist screening")
         out = _empty_result(enable_date_filtering)
         out["agent1_completed"] = True
         out["duplicates_checked"] = True
         return out
+
+    # Order Ethiopia first, then the rest of East Africa, then regional/ambiguous.
+    # Purely a preference ordering: nothing is dropped, but the highest-value
+    # tenders reach Agent 2 first and lead the email digest.
+    for tender in all_tenders:
+        screening = tender.setdefault("screening", {})
+        if not screening.get("geo_priority"):
+            screening["geo_priority"] = geo_priority(
+                (screening.get("step3") or {}).get("country", ""),
+                title=tender.get("title", ""),
+                description=tender.get("description", ""),
+            )
+    all_tenders.sort(key=lambda t: int((t.get("screening") or {}).get("geo_priority") or 3))
+    ethiopia_count = sum(
+        1 for t in all_tenders if int((t.get("screening") or {}).get("geo_priority") or 3) == 1
+    )
+    pipeline_tty(
+        f"[PIPELINE] .... │ priority | Ethiopia {ethiopia_count} | other {len(all_tenders) - ethiopia_count}"
+    )
 
     strong_matches = [
         tender

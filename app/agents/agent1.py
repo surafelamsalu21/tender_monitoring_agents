@@ -27,10 +27,12 @@ from app.core.config import settings
 from app.core.llm_factory import get_chat_llm
 from app.pipeline.progress import pipeline_tty
 from app.utils.geo_filter import (
+    geo_priority,
     is_geography_allowed,
     is_specific_country_allowed,
     required_country_from_page_url,
 )
+from app.utils.scope_filter import is_individual_only_role, is_works_supervision_only
 from app.utils.url_normalize import normalize_fetch_url
 
 logger = logging.getLogger(__name__)
@@ -467,6 +469,9 @@ Extract opportunities as a JSON array only."""
             "strict_country_reject": 0,
             "mission_reject": 0,
             "eligibility_reject": 0,
+            "individual_only_reject": 0,
+            "works_supervision_reject": 0,
+            "focus_reject": 0,
             "supply_only_reject": 0,
             "kept": 0,
         }
@@ -599,6 +604,38 @@ Extract opportunities as a JSON array only."""
                     )
                     continue
 
+            # Deterministic scope nets: assignments addressed to an individual
+            # person (a firm cannot bid) and civil-works supervision dressed up as
+            # "consultancy services". Both are narrow by design — see scope_filter.
+            if is_individual_only_role(title, description):
+                reject_stats["individual_only_reject"] += 1
+                logger.info("Agent 1 individual-only reject: title=%r", title[:80])
+                continue
+            if is_works_supervision_only(title, description):
+                reject_stats["works_supervision_reject"] += 1
+                logger.info("Agent 1 works-supervision reject: title=%r", title[:80])
+                continue
+
+            # Sector / activity focus is mandatory in general. Mission, geography
+            # and eligibility are broad enough that all three can hold for a
+            # vaguely-worded "development consultancy" with no identifiable
+            # sector or advisory activity. Relaxed for the same terse-listing
+            # modes as the gates above.
+            if (
+                settings.SCREENING_REQUIRE_SECTOR_OR_ACTIVITY
+                and not afdb_country_mode
+                and not worldbank_region_mode
+                and not tma_procurement_mode
+            ):
+                if not (
+                    bool(step1.get("sector_relevance")) or bool(step1.get("activity_fit"))
+                ):
+                    reject_stats["focus_reject"] += 1
+                    logger.info(
+                        "Agent 1 sector/activity focus reject: title=%r", title[:80]
+                    )
+                    continue
+
             # Supply-only engagements are out of scope in general; relaxed for
             # AfDB strict-country mode (user requested Ethiopia-inclusive capture).
             step2_check = screening.get("step2", {}) or {}
@@ -627,6 +664,10 @@ Extract opportunities as a JSON array only."""
             screening.setdefault("step2", {})
             screening.setdefault("step3", {})
             screening["screening_version"] = "v1_checklist"
+            # Preference signal only (1=Ethiopia, 2=East Africa, 3=regional).
+            screening["geo_priority"] = geo_priority(
+                country_check, title=title, description=description
+            )
 
             # Handle source language
             raw_lang = screening.get("source_language")
@@ -659,6 +700,10 @@ Extract opportunities as a JSON array only."""
                 f"[AGENT1] · validate summary | total={len(items)} kept={reject_stats.get('kept', 0)} "
                 f"| rejects={json.dumps(reject_only, ensure_ascii=True)}"
             )
+        # Ethiopia first, then the rest of East Africa. Ordering only.
+        validated.sort(
+            key=lambda row: int((row.get("screening") or {}).get("geo_priority") or 3)
+        )
         return validated
 
     def _validate(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

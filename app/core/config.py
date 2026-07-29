@@ -95,6 +95,39 @@ class Settings(BaseSettings):
     AGENT1_FAST_SCREEN_BATCH: int = Field(
         default=5, env="AGENT1_FAST_SCREEN_BATCH")
 
+    # Screening precision. Mission alignment, geography and firm eligibility are
+    # mandatory, which three broad criteria alone satisfy — so a vaguely-worded
+    # "development consultancy in Ethiopia" used to pass. Requiring one of
+    # sector_relevance/activity_fit closes that, at the cost of raising the
+    # effective bar from 3-of-5 to 4-of-5. Set false to fall back to the plain
+    # 3-of-5 rule if genuine opportunities start disappearing.
+    SCREENING_REQUIRE_SECTOR_OR_ACTIVITY: bool = Field(
+        default=True, env="SCREENING_REQUIRE_SECTOR_OR_ACTIVITY")
+
+    # Agent 2 (detail enrichment). Detail pages can be very large (long PDFs,
+    # bid packs), so the prompt is capped before it reaches the provider.
+    AGENT2_MAX_INPUT_CHARS: int = Field(
+        default=120_000, env="AGENT2_MAX_INPUT_CHARS")
+    AGENT2_LLM_TIMEOUT_SEC: int = Field(
+        default=240, env="AGENT2_LLM_TIMEOUT_SEC")
+    # Attempts per tender for transient provider failures (429/overloaded/5xx/timeout).
+    AGENT2_LLM_MAX_ATTEMPTS: int = Field(
+        default=3, env="AGENT2_LLM_MAX_ATTEMPTS")
+    # Raw page text kept on the detail row. Full pages are only needed for
+    # spot-checking extractions, so the default is far below the old 400k.
+    AGENT2_FULL_CONTENT_MAX_CHARS: int = Field(
+        default=60_000, env="AGENT2_FULL_CONTENT_MAX_CHARS")
+    # Keep a tender using its listing data when the detail page is unreachable
+    # (anti-bot stubs, client-side-rendered notices). Set false to require a
+    # successful detail extraction before a tender is reported.
+    AGENT2_LISTING_FALLBACK_ENABLED: bool = Field(
+        default=True, env="AGENT2_LISTING_FALLBACK_ENABLED")
+
+    # Provider-level HTTP timeout and retry budget for hosted LLM APIs.
+    LLM_REQUEST_TIMEOUT_SEC: float = Field(
+        default=120.0, env="LLM_REQUEST_TIMEOUT_SEC")
+    LLM_MAX_RETRIES: int = Field(default=3, env="LLM_MAX_RETRIES")
+
     # Email Configuration
     SMTP_HOST: str = Field(default="smtp.gmail.com", env="SMTP_HOST")
     SMTP_PORT: int = Field(default=587, env="SMTP_PORT")

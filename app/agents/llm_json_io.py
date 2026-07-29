@@ -92,10 +92,17 @@ def _extract_json_block(text: str) -> Optional[Any]:
     return None
 
 
-def parse_json_array(raw: str) -> List[dict]:
-    """Best-effort: turn model text into a list of dicts."""
+def try_parse_json_array(raw: str) -> Optional[List[dict]]:
+    """
+    Turn model text into a list of dicts, or ``None`` when nothing parseable was found.
+
+    Distinguishes a deliberate empty array (the model looked at the page and saw no
+    rows) from a failure to parse the response. Callers need that difference to
+    decide whether a heuristic fallback is warranted: firing one on a well-formed
+    ``[]`` invents rows the model explicitly declined to report.
+    """
     if not raw:
-        return []
+        return None
     t = raw.strip()
     try:
         payload = json.loads(t)
@@ -115,7 +122,7 @@ def parse_json_array(raw: str) -> List[dict]:
     cleaned = strip_reasoning(raw)
     json_data = _extract_json_block(cleaned)
     if json_data is None:
-        return []
+        return None
     if isinstance(json_data, list):
         return [x for x in json_data if isinstance(x, dict)]
     if isinstance(json_data, dict):
@@ -124,4 +131,9 @@ def parse_json_array(raw: str) -> List[dict]:
             return [x for x in inner if isinstance(x, dict)]
         if json_data.get("title") and json_data.get("url"):
             return [json_data]
-    return []
+    return None
+
+
+def parse_json_array(raw: str) -> List[dict]:
+    """Best-effort: turn model text into a list of dicts."""
+    return try_parse_json_array(raw) or []

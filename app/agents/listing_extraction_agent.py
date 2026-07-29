@@ -9,7 +9,7 @@ from urllib.parse import urljoin
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.agents.llm_json_io import extract_message_text, parse_json_array
+from app.agents.llm_json_io import extract_message_text, try_parse_json_array
 from app.agents.page_sanity import markdown_indicates_error_or_empty_notice
 from app.core.config import settings
 from app.core.llm_factory import get_chat_llm
@@ -240,8 +240,11 @@ Output the JSON array only."""
             )
             response = await asyncio.wait_for(task, timeout=timeout)
             raw = extract_message_text(response)
-            rows = parse_json_array(raw)
-            out = _rows_from_parsed_dicts(rows)
+            parsed = try_parse_json_array(raw)
+            # A well-formed empty array is the model saying "no notices on this
+            # page", which is a real answer — not a parse failure.
+            model_reported_no_rows = parsed is not None and not parsed
+            out = _rows_from_parsed_dicts(parsed or [])
             if not out:
                 coerced = _rows_from_string_url_json(raw)
                 if coerced:
@@ -259,6 +262,13 @@ Output the JSON array only."""
                         u = _normalize_row_url(u, base)
                     fixed.append({**item, "url": u})
                 out = [x for x in fixed if x["url"].startswith("http")]
+
+            if not out and model_reported_no_rows:
+                logger.info(
+                    "ListingExtractionAgent: model reported no notices on this page; "
+                    "skipping markdown link fallback"
+                )
+                return []
 
             if not out and raw.strip():
                 logger.warning(

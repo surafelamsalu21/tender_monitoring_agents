@@ -220,6 +220,37 @@ def _title_has_allowed_token(title_lower: str) -> bool:
     return False
 
 
+# Ethiopia is the primary focus; the rest of the allowed region is secondary.
+_ETHIOPIA_TOKENS: frozenset[str] = frozenset({"ethiopia", "ethiopian", "addis ababa"})
+
+GEO_PRIORITY_ETHIOPIA = 1
+GEO_PRIORITY_EAST_AFRICA = 2
+GEO_PRIORITY_REGIONAL = 3
+
+
+def geo_priority(country: str, title: str = "", description: str = "") -> int:
+    """
+    Rank an in-region opportunity by how close it is to Precise's primary focus.
+
+    Returns ``1`` for Ethiopia, ``2`` for another East African country, and ``3``
+    when the geography is only regional or ambiguous. This is a *preference*
+    signal for ordering and review — it never drops anything. Call it only on
+    tenders that already passed :func:`is_geography_allowed`.
+    """
+    hay = f"{(country or '').lower()}\n{(title or '').lower()}\n{(description or '').lower()[:500]}"
+
+    if any(token in hay for token in _ETHIOPIA_TOKENS):
+        return GEO_PRIORITY_ETHIOPIA
+
+    for token in _ALLOWED_TOKENS:
+        if token in _ETHIOPIA_TOKENS:
+            continue
+        if token in hay:
+            return GEO_PRIORITY_EAST_AFRICA
+
+    return GEO_PRIORITY_REGIONAL
+
+
 def required_country_from_page_url(page_url: str) -> str | None:
     """
     Extract a strict geography override encoded in a monitored page URL.
