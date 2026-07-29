@@ -80,6 +80,21 @@ class TenderDetailAgent:
                     logger.info(f"Agent 2: Skipping expired/old tender: {basic_tender.get('title', 'Unknown')[:50]}...")
                     return self._create_skipped_details(basic_tender, "Tender expired or too old")
 
+            # Agent 1 could not confirm this link exists in the harvested page, so
+            # ``tender_url`` is the listing page. Scraping it would describe some
+            # other notice; report from the listing data instead.
+            if basic_tender.get("detail_url_unverified"):
+                logger.info(
+                    "Agent 2: skipping detail fetch, detail URL unverified: %s...",
+                    basic_tender.get("title", "Unknown")[:50],
+                )
+                return self._create_listing_only_details(
+                    basic_tender,
+                    "No verifiable detail link in the source listing",
+                ) or self._create_fallback_details(
+                    basic_tender, "No verifiable detail link in the source listing"
+                )
+
             if self._is_un_careers_detail_url(tender_url):
                 detailed_info = await self._extract_un_careers_detailed_info_api(
                     tender_url, basic_tender

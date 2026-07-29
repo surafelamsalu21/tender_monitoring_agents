@@ -28,7 +28,7 @@ Each element must be an object with keys:
 - reference (string or null)
 - publication_date (string or null, normalize to YYYY-MM-DD when possible)
 - deadline (string or null, normalize to YYYY-MM-DD when possible)
-- detail_url (string or null, absolute https URL if present in the text; else null)
+- detail_url (string or null, copied verbatim from a link that literally appears in the text; null if the row has none. Never construct, guess or complete a URL — in particular never build one from a reference number or an inferred id)
 - country (string or null)
 - snippet (short English summary or null)
 

@@ -22,6 +22,7 @@ from app.utils.geo_filter import (
 )
 from app.utils.scope_filter import is_individual_only_role, is_works_supervision_only
 from app.utils.tender_deadline_gate import filter_expired_agent1_items
+from app.utils.url_grounding import build_url_index
 
 logger = logging.getLogger(__name__)
 
@@ -135,10 +136,17 @@ async def run_simple_pipeline(
                 logger.debug("Simple pipeline: skipped invalid structured row: %s", exc)
         pipeline_tty(f"[AGENT1] .... ✓ {len(rows)} structured source row(s)")
         logger.info("Simple pipeline: using %s structured source row(s)", len(rows))
+        source_url_index = None
     else:
         struct_agent = ListingStructureAgent()
         rows = await struct_agent.structure_listing(md_source, page_url)
-    all_tenders = listing_rows_to_tender_dicts(rows, page_url)
+        # Only LLM-produced rows need grounding; structured sources carry real URLs.
+        source_url_index = build_url_index(
+            md_source,
+            (crawl_artifact.links if crawl_artifact is not None else None) or [],
+            base_url=page_url or "",
+        )
+    all_tenders = listing_rows_to_tender_dicts(rows, page_url, source_url_index)
 
     if not all_tenders:
         logger.warning("Simple pipeline: 0 tenders after structure + adapter")

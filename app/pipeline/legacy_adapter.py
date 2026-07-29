@@ -1,11 +1,15 @@
 """Map structured listing rows to legacy tender dicts expected by Agent 2 / repositories."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
 
 from app.pipeline.schemas import ListingRowV1
+from app.utils.url_grounding import is_url_grounded
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_deadline(raw: Optional[str]) -> Optional[str]:
@@ -43,8 +47,15 @@ def _absolute_url(base: str, candidate: Optional[str]) -> Optional[str]:
 def listing_rows_to_tender_dicts(
     rows: list[ListingRowV1],
     page_url: str,
+    source_url_index: Optional[set[str]] = None,
 ) -> list[dict[str, Any]]:
-    """Convert Agent 1 structural output into the dict shape used downstream."""
+    """Convert Agent 1 structural output into the dict shape used downstream.
+
+    Pass ``source_url_index`` (see :mod:`app.utils.url_grounding`) for rows the LLM
+    produced, so an invented ``detail_url`` falls back to the listing page instead
+    of becoming a dead link in a notification. Rows from structured API sources
+    carry real URLs and need no index.
+    """
     tenders: list[dict[str, Any]] = []
     source = ""
     host = urlparse(page_url or "").netloc.lower()
@@ -59,6 +70,16 @@ def listing_rows_to_tender_dicts(
         if not title:
             continue
         detail = _absolute_url(page_url, row.detail_url) or page_url
+        detail_unverified = False
+        if source_url_index and not is_url_grounded(detail, source_url_index, page_url):
+            logger.info(
+                "legacy_adapter: detail URL absent from harvested page, using listing URL: "
+                "%r (title=%r)",
+                detail[:120],
+                title[:60],
+            )
+            detail = page_url
+            detail_unverified = True
         deadline_norm = _normalize_deadline(row.deadline)
         pub_norm = _normalize_deadline(row.publication_date)
 
@@ -90,15 +111,16 @@ def listing_rows_to_tender_dicts(
             "step2": {"pipeline": "simple"},
             "step3": step3,
         }
-        tenders.append(
-            {
-                "title": title,
-                "url": detail,
-                "date": deadline_norm or pub_norm,
-                "description": description.strip(),
-                "screening": screening,
-                "date_status": "unknown",
-                "reference": reference or None,
-            }
-        )
+        tender: dict[str, Any] = {
+            "title": title,
+            "url": detail,
+            "date": deadline_norm or pub_norm,
+            "description": description.strip(),
+            "screening": screening,
+            "date_status": "unknown",
+            "reference": reference or None,
+        }
+        if detail_unverified:
+            tender["detail_url_unverified"] = True
+        tenders.append(tender)
     return tenders

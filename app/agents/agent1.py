@@ -33,6 +33,7 @@ from app.utils.geo_filter import (
     required_country_from_page_url,
 )
 from app.utils.scope_filter import is_individual_only_role, is_works_supervision_only
+from app.utils.url_grounding import build_url_index, is_url_grounded
 from app.utils.url_normalize import normalize_fetch_url
 
 logger = logging.getLogger(__name__)
@@ -104,7 +105,11 @@ class TenderExtractionAgent:
         merged = await TenderScreeningAgent().screen_items(
             listings, keyword_hints=keyword_hints
         )
-        return self._validate_and_enrich(merged, page_url=page_url)
+        return self._validate_and_enrich(
+            merged,
+            page_url=page_url,
+            source_url_index=build_url_index(page_content, base_url=page_url or ""),
+        )
 
     async def extract_and_screen_opportunities(
         self,
@@ -198,7 +203,11 @@ class TenderExtractionAgent:
             logger.info("Agent 1: extracted %d opportunities", len(opportunities))
 
             # Validate and enrich
-            validated = self._validate_and_enrich(opportunities, page_url=page_url)
+            validated = self._validate_and_enrich(
+                opportunities,
+                page_url=page_url,
+                source_url_index=build_url_index(page_content, base_url=page_url or ""),
+            )
 
             logger.info("Agent 1: validated %d opportunities", len(validated))
             return validated
@@ -239,6 +248,12 @@ class TenderExtractionAgent:
 Return ONLY a JSON array of opportunity objects.
 NO markdown code fences, NO explanations, NO reasoning text.
 Start with [ and end with ]
+
+URL RULE (strict): copy "url" and "step3.link" verbatim from a link that literally
+appears in the page content. Never construct, guess, complete or pattern-match a
+URL — do not build one from a reference number, an id you inferred, or a path you
+have seen on similar sites. If the page shows no link for a row, use the listing
+page URL as-is.
 
 Example structure:
 [
@@ -441,8 +456,14 @@ Extract opportunities as a JSON array only."""
         self,
         items: List[Dict[str, Any]],
         page_url: Optional[str] = None,
+        source_url_index: Optional[set] = None,
     ) -> List[Dict[str, Any]]:
-        """Validate and enrich opportunity data."""
+        """Validate and enrich opportunity data.
+
+        ``source_url_index`` (see :mod:`app.utils.url_grounding`) lets this method
+        detect detail URLs the model invented. When omitted, no grounding check
+        runs.
+        """
         validated: List[Dict[str, Any]] = []
         parsed_page = urlparse(page_url or "")
         tma_procurement_mode = (
@@ -461,6 +482,7 @@ Extract opportunities as a JSON array only."""
         )
         reject_stats: Dict[str, int] = {
             "missing_required_fields": 0,
+            "url_not_in_source": 0,
             "award_notice_reject": 0,
             "unrelated_scope": 0,
             "yes_count_lt3": 0,
@@ -494,6 +516,20 @@ Extract opportunities as a JSON array only."""
             if not title or not url:
                 reject_stats["missing_required_fields"] += 1
                 continue
+
+            # Guard against invented detail links. The row itself may be real, so
+            # point it at the listing page and let Agent 2 report from the listing
+            # data rather than fetching a URL that does not exist.
+            detail_url_unverified = False
+            if source_url_index and not is_url_grounded(url, source_url_index, page_url or ""):
+                reject_stats["url_not_in_source"] += 1
+                logger.info(
+                    "Agent 1: detail URL not found in harvested page, using listing URL: %r (title=%r)",
+                    url[:120],
+                    title[:60],
+                )
+                url = (page_url or "").strip() or url
+                detail_url_unverified = True
 
             # Get or create screening data
             screening = item.get("screening", {}) or {}
@@ -664,6 +700,14 @@ Extract opportunities as a JSON array only."""
             screening.setdefault("step2", {})
             screening.setdefault("step3", {})
             screening["screening_version"] = "v1_checklist"
+            # ``step3.link`` is what notifications render, and the model fills it
+            # separately from ``url`` — so it needs the same grounding treatment.
+            step3_link = str(screening["step3"].get("link") or "").strip()
+            if not step3_link or (
+                source_url_index
+                and not is_url_grounded(step3_link, source_url_index, page_url or "")
+            ):
+                screening["step3"]["link"] = url
             # Preference signal only (1=Ethiopia, 2=East Africa, 3=regional).
             screening["geo_priority"] = geo_priority(
                 country_check, title=title, description=description
@@ -676,14 +720,17 @@ Extract opportunities as a JSON array only."""
             else:
                 screening.pop("source_language", None)
 
-            validated.append({
+            row: Dict[str, Any] = {
                 "title": title,
                 "url": url,
                 "date": item.get("date"),
                 "description": description,
                 "screening": screening,
                 "date_status": "unknown",
-            })
+            }
+            if detail_url_unverified:
+                row["detail_url_unverified"] = True
+            validated.append(row)
             reject_stats["kept"] += 1
         if items:
             reject_only = {k: v for k, v in reject_stats.items() if k not in ("kept",) and v}
