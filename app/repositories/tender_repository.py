@@ -6,6 +6,7 @@ import hashlib
 import re
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, text
 import logging
@@ -17,6 +18,20 @@ from app.models.keyword import Keyword
 from app.models.page import MonitoredPage
 from app.utils.url_normalize import normalize_fetch_url
 
+_TRACKING_QUERY_KEYS = {
+    "fbclid",
+    "gclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "mkt_tok",
+    "ref",
+    "ref_src",
+    "source",
+    "spm",
+    "trk",
+}
+
 class TenderRepository:
     """Enhanced repository for tender database operations with keyword tracking"""
 
@@ -24,7 +39,28 @@ class TenderRepository:
     def _normalize_url(value: Optional[str]) -> str:
         if not value:
             return ""
-        return normalize_fetch_url(str(value).strip()).rstrip("/")
+        normalized = normalize_fetch_url(str(value).strip())
+        parsed = urlparse(normalized)
+        if not parsed.scheme or not parsed.netloc:
+            return normalized.rstrip("/")
+        filtered_query = [
+            (k, v)
+            for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+            if not k.lower().startswith("utm_") and k.lower() not in _TRACKING_QUERY_KEYS
+        ]
+        query = urlencode(sorted(filtered_query), doseq=True)
+        path = parsed.path.rstrip("/")
+        canonical = urlunparse(
+            (
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                path,
+                "",
+                query,
+                "",
+            )
+        )
+        return canonical.rstrip("/")
 
     def _is_listing_page_url(self, db: Session, page_id: int, url: str) -> bool:
         """True when the row URL is just the monitored listing page, not a notice URL."""

@@ -60,6 +60,27 @@ def _is_ea_policy_advisory_allowance(tender: Dict[str, Any]) -> bool:
     return True
 
 
+def _normalize_identity_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+
+def _batch_identity_key(tender: Dict[str, Any], *, page_id: int, tender_repo: Any) -> str:
+    screening = tender.get("screening") or {}
+    step3 = screening.get("step3") or {}
+    normalized_url = tender_repo._normalize_url(tender.get("url", ""))
+    return "|".join(
+        [
+            f"page:{page_id}",
+            f"url:{normalized_url}",
+            f"title:{_normalize_identity_text(tender.get('title'))}",
+            f"deadline:{_normalize_identity_text(step3.get('deadline') or tender.get('date'))}",
+            f"source:{_normalize_identity_text(step3.get('source'))}",
+            f"type:{_normalize_identity_text(step3.get('type'))}",
+            f"country:{_normalize_identity_text(step3.get('country'))}",
+        ]
+    )
+
+
 def _empty_result(enable_date_filtering: bool, error: str = "") -> Dict[str, Any]:
     failed = bool(error)
     return {
@@ -395,12 +416,18 @@ async def run_simple_pipeline(
     logger.info("Simple pipeline: deduplicating %s row(s)", len(all_tenders))
     extracted: List[Dict[str, Any]] = []
     duplicate_count = 0
+    seen_batch_keys: set[str] = set()
     for tender in all_tenders:
         title = tender.get("title", "")
         url = tender.get("url", "")
         if not title or not url:
             duplicate_count += 1
             continue
+        batch_key = _batch_identity_key(tender, page_id=page_id, tender_repo=tender_repo)
+        if batch_key in seen_batch_keys:
+            duplicate_count += 1
+            continue
+        seen_batch_keys.add(batch_key)
         is_dup = tender_repo.check_duplicate_tender(
             db,
             title,

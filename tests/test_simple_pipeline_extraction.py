@@ -18,6 +18,7 @@ import app.models  # noqa: F401 - register SQLAlchemy models
 from app.core.database import Base
 from app.crawl.playwright_harvest import _is_egp_bids_url, _undp_region_filter_id
 from app.models.page import MonitoredPage
+from app.pipeline.simple_orchestrator import _batch_identity_key
 from app.pipeline.agent1_structure import _heuristic_rows_from_markdown
 from app.repositories.tender_repository import TenderRepository
 
@@ -119,6 +120,95 @@ def test_duplicate_check_uses_detail_url_when_llm_wording_changes():
         )
     finally:
         db.close()
+
+
+def test_duplicate_check_ignores_tracking_query_and_fragment():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    repo = TenderRepository()
+    try:
+        page = MonitoredPage(
+            name="WB",
+            url="https://example.org/notices",
+            is_active=True,
+        )
+        db.add(page)
+        db.commit()
+        db.refresh(page)
+
+        first = repo.save_tender(
+            db,
+            page_id=page.id,
+            title="Road Corridor Technical Advisor",
+            url="https://example.org/notices/123?utm_source=mail#section",
+            tender_date="2026-07-31",
+            description="",
+            screening_result={
+                "step3": {
+                    "source": "World Bank",
+                    "deadline": "2026-07-31",
+                    "type": "consulting",
+                    "country": "Ethiopia",
+                },
+                "yes_count": 5,
+                "passes_filter": True,
+            },
+        )
+
+        assert first is not None
+        assert repo.check_duplicate_tender(
+            db,
+            title="Road Corridor Technical Advisor",
+            url="https://example.org/notices/123?utm_medium=weekly",
+            page_id=page.id,
+            screening_result={
+                "step3": {
+                    "source": "World Bank",
+                    "deadline": "2026-07-31",
+                    "type": "consulting",
+                    "country": "Ethiopia",
+                }
+            },
+            tender_date="2026-07-31",
+        )
+    finally:
+        db.close()
+
+
+def test_batch_identity_key_collapses_whitespace_and_tracking_params():
+    repo = TenderRepository()
+    t1 = {
+        "title": "  Economic   Policy Advisory  ",
+        "url": "https://example.org/notices/777?utm_source=mail",
+        "date": "2026-08-05",
+        "screening": {
+            "step3": {
+                "source": "AfDB",
+                "deadline": "2026-08-05",
+                "type": "consulting",
+                "country": "Ethiopia",
+            }
+        },
+    }
+    t2 = {
+        "title": "economic policy advisory",
+        "url": "https://example.org/notices/777?utm_medium=digest#top",
+        "date": "2026-08-05",
+        "screening": {
+            "step3": {
+                "source": "afdb",
+                "deadline": "2026-08-05",
+                "type": "consulting",
+                "country": "ethiopia",
+            }
+        },
+    }
+
+    assert _batch_identity_key(t1, page_id=42, tender_repo=repo) == _batch_identity_key(
+        t2, page_id=42, tender_repo=repo
+    )
 
 
 def test_detailed_tender_save_normalizes_placeholder_strings():
