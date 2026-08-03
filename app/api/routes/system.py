@@ -3,7 +3,7 @@ Fixed System API Routes
 app/api/routes/system.py
 """
 from typing import Dict, Any, List, Literal, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from urllib.parse import urlparse
 
@@ -17,6 +17,7 @@ from app.models import MonitoredPage, Tender, Keyword, CrawlLog
 from app.repositories.email_settings_repository import EmailSettingsRepository
 from app.repositories.page_repository import PageRepository
 from app.repositories.tender_repository import TenderRepository
+from app.auth.deps import require_admin_or_above
 from app.agents import TenderAgent
 from app.agents.agent2 import TenderDetailAgent
 from app.agents.agent3 import EmailComposerAgent
@@ -94,6 +95,10 @@ class Agent1ScreeningTestRequest(BaseModel):
 
 # Instantiate the logger for this module
 logger = logging.getLogger(__name__)
+
+
+def _iso_or_none(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value else None
 
 # --------------------------
 # System Status Endpoint
@@ -424,6 +429,143 @@ async def get_crawl_logs(
         }
         for log in logs
     ]
+
+
+@router.get("/crawl-audit")
+async def get_crawl_audit(
+    recent_hours: int = 72,
+    db: Session = Depends(get_db),
+    _=Depends(require_admin_or_above),
+):
+    """
+    Admin-only crawl audit report to verify whether monitored pages are being crawled.
+
+    recent_hours controls the audit window for "recently crawled" coverage.
+    """
+    page_repo = PageRepository()
+    pages = page_repo.get_active_pages(db)
+
+    hours = max(6, min(int(recent_hours or 48), 24 * 30))
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+    page_rows: List[Dict[str, Any]] = []
+    recent_crawled_count = 0
+    recent_failed_count = 0
+    never_crawled_count = 0
+    due_now_count = 0
+    overdue_due_count = 0
+
+    # Local import to avoid circular startup import chain.
+    from app.crawl.eligibility import is_monitored_page_due_for_crawl
+
+    for page in pages:
+        latest_log = (
+            db.query(CrawlLog)
+            .filter(CrawlLog.page_id == page.id)
+            .order_by(CrawlLog.started_at.desc())
+            .first()
+        )
+        latest_success = (
+            db.query(CrawlLog)
+            .filter(CrawlLog.page_id == page.id, CrawlLog.status == "completed")
+            .order_by(CrawlLog.started_at.desc())
+            .first()
+        )
+
+        latest_started = latest_log.started_at if latest_log else None
+        latest_completed = latest_log.completed_at if latest_log else None
+        latest_status = latest_log.status if latest_log else "never"
+
+        has_recent_crawl = bool(latest_started and latest_started >= cutoff)
+        has_recent_success = bool(
+            latest_success and latest_success.started_at and latest_success.started_at >= cutoff
+        )
+        is_due = bool(is_monitored_page_due_for_crawl(page))
+
+        if has_recent_crawl:
+            recent_crawled_count += 1
+        if latest_status == "failed" and has_recent_crawl:
+            recent_failed_count += 1
+        if latest_status == "never":
+            never_crawled_count += 1
+        if is_due:
+            due_now_count += 1
+            if not has_recent_crawl:
+                overdue_due_count += 1
+
+        if latest_status == "never":
+            health = "never_crawled"
+        elif latest_status == "failed":
+            health = "failing"
+        elif is_due and not has_recent_crawl:
+            health = "overdue"
+        elif latest_status == "completed":
+            health = "healthy"
+        else:
+            health = "attention"
+
+        page_rows.append(
+            {
+                "page_id": page.id,
+                "page_name": page.name,
+                "url": page.url,
+                "crawl_strategy": (getattr(page, "crawl_strategy", None) or "crawl4ai"),
+                "crawl_frequency_hours": page.crawl_frequency_hours,
+                "is_due_now": is_due,
+                "health": health,
+                "consecutive_failures": int(page.consecutive_failures or 0),
+                "last_crawled": _iso_or_none(page.last_crawled),
+                "last_successful_crawl": _iso_or_none(page.last_successful_crawl),
+                "has_recent_crawl": has_recent_crawl,
+                "has_recent_success": has_recent_success,
+                "latest_log": (
+                    {
+                        "id": latest_log.id,
+                        "status": latest_log.status,
+                        "started_at": _iso_or_none(latest_started),
+                        "completed_at": _iso_or_none(latest_completed),
+                        "tenders_found": latest_log.tenders_found,
+                        "tenders_new": latest_log.tenders_new,
+                        "error_message": latest_log.error_message,
+                    }
+                    if latest_log
+                    else None
+                ),
+            }
+        )
+
+    def _order_key(row: Dict[str, Any]) -> tuple[int, str]:
+        priority = {
+            "failing": 0,
+            "overdue": 1,
+            "never_crawled": 2,
+            "attention": 3,
+            "healthy": 4,
+        }
+        return (priority.get(row.get("health", "healthy"), 4), str(row.get("page_name", "")).lower())
+
+    page_rows.sort(key=_order_key)
+
+    total_pages = len(page_rows)
+    not_recently_crawled = max(0, total_pages - recent_crawled_count)
+    coverage_percent = round((recent_crawled_count / total_pages) * 100, 1) if total_pages else 100.0
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "recent_window_hours": hours,
+        "summary": {
+            "total_active_pages": total_pages,
+            "recently_crawled_pages": recent_crawled_count,
+            "not_recently_crawled_pages": not_recently_crawled,
+            "never_crawled_pages": never_crawled_count,
+            "recent_failed_pages": recent_failed_count,
+            "due_now_pages": due_now_count,
+            "due_now_not_recently_crawled_pages": overdue_due_count,
+            "coverage_percent": coverage_percent,
+            "all_pages_recently_crawled": total_pages > 0 and recent_crawled_count == total_pages,
+        },
+        "pages": page_rows,
+    }
 
 # --------------------------
 # Crawler Testing Endpoint
