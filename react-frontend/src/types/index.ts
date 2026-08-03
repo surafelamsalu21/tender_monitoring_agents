@@ -142,5 +142,6 @@ export type TabType =
   | 'keywords'
   | 'test-crawler'
   | 'settings'
+  | 'crawl-audit'
   | 'account';
 export type CategoryType = 'all' | 'passed' | 'failed';

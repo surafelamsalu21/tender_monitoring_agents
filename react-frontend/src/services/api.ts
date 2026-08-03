@@ -160,6 +160,51 @@ export interface BackupListResponse {
   backups: BackupFile[];
 }
 
+export interface CrawlAuditLog {
+  id: number;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  tenders_found: number;
+  tenders_new: number;
+  error_message?: string | null;
+}
+
+export interface CrawlAuditPage {
+  page_id: number;
+  page_name: string;
+  url: string;
+  crawl_strategy: string;
+  crawl_frequency_hours: number;
+  is_due_now: boolean;
+  health: 'healthy' | 'failing' | 'overdue' | 'never_crawled' | 'attention';
+  consecutive_failures: number;
+  last_crawled: string | null;
+  last_successful_crawl: string | null;
+  has_recent_crawl: boolean;
+  has_recent_success: boolean;
+  latest_log: CrawlAuditLog | null;
+}
+
+export interface CrawlAuditSummary {
+  total_active_pages: number;
+  recently_crawled_pages: number;
+  not_recently_crawled_pages: number;
+  never_crawled_pages: number;
+  recent_failed_pages: number;
+  due_now_pages: number;
+  due_now_not_recently_crawled_pages: number;
+  coverage_percent: number;
+  all_pages_recently_crawled: boolean;
+}
+
+export interface CrawlAuditReport {
+  generated_at: string;
+  recent_window_hours: number;
+  summary: CrawlAuditSummary;
+  pages: CrawlAuditPage[];
+}
+
 export const apiRequest = async (
   endpoint: string,
   method: 'get' | 'post' | 'put' | 'patch' | 'delete' = 'get',
@@ -245,9 +290,15 @@ export const apiService = {
     const data = await apiRequest('/api/v1/system/status');
     return data;
   },
+
+  getCrawlAuditReport: async (recentHours: number = 48): Promise<CrawlAuditReport> => {
+    const safeHours = Math.max(6, Math.min(Math.floor(recentHours || 48), 24 * 30));
+    const data = await apiRequest(`/api/v1/system/crawl-audit?recent_hours=${safeHours}`);
+    return data as CrawlAuditReport;
+  },
     
-  triggerExtraction: async (): Promise<{ message: string }> => {
-    const data = await apiRequest('/trigger-extraction', 'post');
+  triggerExtraction: async (force: boolean = true): Promise<{ message: string }> => {
+    const data = await apiRequest(`/trigger-extraction?force=${force ? 'true' : 'false'}`, 'post');
     return data as { message: string };
   },
 

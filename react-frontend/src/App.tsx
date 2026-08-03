@@ -9,6 +9,7 @@ import {
   TestTube,
   LogOut,
   User,
+  ClipboardCheck,
 } from 'lucide-react';
 import { useApiData } from './hooks/useApi';
 import { 
@@ -20,6 +21,7 @@ import {
   TestCrawler,
   LoginPage,
   AccountPage,
+  CrawlAudit,
 } from './components';
 import { TabType } from './types';
 import { apiService, AuthUser, clearAuthToken, getAuthToken, setUnauthorizedHandler } from './services/api';
@@ -30,6 +32,8 @@ const AuthenticatedApp: React.FC<{
   onLogout: () => void;
 }> = ({ user, onUserChange, onLogout }) => {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
+  const isAdminUser =
+    Boolean(user.is_superuser) || user.role === 'admin' || user.role === 'super_admin';
   
   const {
     tenders,
@@ -63,6 +67,9 @@ const AuthenticatedApp: React.FC<{
     { id: 'keywords', name: 'Keywords', icon: Tag },
     { id: 'test-crawler', name: 'Test Crawler', icon: TestTube },
     { id: 'settings', name: 'Settings', icon: SettingsIcon },
+    ...(isAdminUser
+      ? [{ id: 'crawl-audit', name: 'Crawl Audit', icon: ClipboardCheck }]
+      : []),
     { id: 'account', name: 'Account', icon: User },
   ];
 
@@ -103,6 +110,8 @@ const AuthenticatedApp: React.FC<{
         return <AccountPage user={user} onUserUpdated={onUserChange} />;
       case 'settings':
         return <Settings />;
+      case 'crawl-audit':
+        return <CrawlAudit isAdmin={isAdminUser} />;
       default:
         return (
           <Dashboard

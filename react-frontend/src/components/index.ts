@@ -7,3 +7,4 @@ export { TestCrawler } from './TestCrawler';  // NEW EXPORT
 export { Settings } from './Settings';
 export { LoginPage } from './LoginPage';
 export { AccountPage } from './AccountPage';
+export { CrawlAudit } from './CrawlAudit';
