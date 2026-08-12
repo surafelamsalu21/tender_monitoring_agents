@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -791,6 +792,141 @@ def _is_egp_bids_url(url: str) -> bool:
     return parsed.netloc.lower() in _EGP_BIDS_HOSTS and "/egp/bids" in parsed.path.lower()
 
 
+def _is_2merkato_tenders_url(url: str) -> bool:
+    """2merkato tender listing pages are JS-rendered and need DOM waits."""
+    parsed = urlparse(url or "")
+    return parsed.netloc.lower() == "tender.2merkato.com" and parsed.path.lower().startswith("/tenders")
+
+
+def _looks_like_2merkato_detail_url(url: str) -> bool:
+    parsed = urlparse(str(url or ""))
+    if parsed.netloc.lower() != "tender.2merkato.com":
+        return False
+    # Example detail path: /tenders/6a70a7390a538a7800000001
+    # Detail records are hex-like IDs; exclude listing routes such as /tenders/proforma.
+    return bool(re.match(r"^/tenders/[0-9a-f]{12,}$", parsed.path.lower()))
+
+
+def _two_merkato_page_urls(listing_url: str, max_pages: int) -> list[str]:
+    parsed = urlparse(listing_url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    pages_budget = max(_MIN_PAGE_ATTEMPTS, min(int(max_pages or _MIN_PAGE_ATTEMPTS), 4))
+    try:
+        start_page = int((params.get("page") or ["1"])[0] or "1")
+    except (TypeError, ValueError):
+        start_page = 1
+
+    if "page" not in params:
+        params["page"] = [str(start_page)]
+
+    urls: list[str] = []
+    for page_num in range(start_page, start_page + pages_budget):
+        p = {k: v[0] for k, v in params.items()}
+        p["page"] = str(page_num)
+        urls.append(
+            urlunparse(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    parsed.params,
+                    urlencode(p),
+                    parsed.fragment,
+                )
+            )
+        )
+    return urls
+
+
+async def _capture_2merkato_listing(
+    page, listing_url: str, max_pages: int
+) -> tuple[str, list[str], str, int]:
+    """
+    2merkato renders the listing client-side; generic immediate capture grabs only
+    the shell. Wait for rendered tender links and capture page text + detail URLs.
+    """
+    page_urls = _two_merkato_page_urls(listing_url, max_pages)
+    parts: list[str] = []
+    html_parts: list[str] = []
+    detail_links: list[str] = []
+    seen_detail: set[str] = set()
+    pages_captured = 0
+
+    for idx, page_url in enumerate(page_urls, start=1):
+        navigated = False
+        for wait_state in ("networkidle", "domcontentloaded", "commit"):
+            try:
+                timeout_ms = 60_000 if wait_state == "networkidle" else 45_000
+                await page.goto(page_url, wait_until=wait_state, timeout=timeout_ms)
+                navigated = True
+                break
+            except Exception as exc:
+                logger.info(
+                    "2merkato goto(%s) failed for page %s (%s); trying next wait state.",
+                    wait_state,
+                    idx,
+                    exc,
+                )
+        if not navigated:
+            logger.warning("2merkato page %s unreachable; stopping pagination.", idx)
+            break
+
+        # Let Vue/SPA finish rendering tender cards.
+        await page.wait_for_timeout(2500)
+        try:
+            await page.wait_for_selector('a[href*="/tenders/"]', timeout=20_000)
+        except Exception:
+            await page.wait_for_timeout(4000)
+        await page.wait_for_timeout(1000)
+
+        page_text = await _visible_page_text(page)
+        rows = await page.evaluate(
+            """() => Array.from(document.querySelectorAll('a[href*="/tenders/"]'))
+                .map((a) => {
+                    const href = a.href || '';
+                    const text = (a.innerText || a.textContent || '')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    return { href, text };
+                })
+                .filter((item) => item.href)"""
+        )
+
+        page_detail_lines: list[str] = []
+        for row in rows or []:
+            href = str(row.get("href") or "").strip()
+            text = str(row.get("text") or "").strip()
+            if not _looks_like_2merkato_detail_url(href):
+                continue
+            if href not in seen_detail:
+                seen_detail.add(href)
+                detail_links.append(href)
+            label = text if text else href.rsplit("/", 1)[-1]
+            page_detail_lines.append(f"- [{label}]({href.replace(')', '%29')})")
+
+        if page_text.strip() or page_detail_lines:
+            section = f"\n\n--- Page {idx}: {page.url} ---\n\n{page_text}"
+            if page_detail_lines:
+                section += "\n\nVisible tender links:\n" + "\n".join(
+                    list(dict.fromkeys(page_detail_lines))
+                )
+            parts.append(section)
+            pages_captured += 1
+
+        html_parts.append(await page.content())
+
+        # No rendered tender links on this page usually means pagination is exhausted.
+        if not page_detail_lines:
+            break
+
+    return (
+        "\n".join(parts).strip(),
+        detail_links,
+        "\n".join(html_parts),
+        pages_captured,
+    )
+
+
 async def _egp_click_if_visible(page, selector: str) -> bool:
     try:
         locator = page.locator(selector).first
@@ -1535,6 +1671,10 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
                     )
                 elif _is_egp_bids_url(listing_url):
                     text, links, html, pages_captured = await _capture_egp_bids_listing(
+                        page, listing_url, max_p
+                    )
+                elif _is_2merkato_tenders_url(listing_url):
+                    text, links, html, pages_captured = await _capture_2merkato_listing(
                         page, listing_url, max_p
                     )
                 else:

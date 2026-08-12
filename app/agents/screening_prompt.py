@@ -7,7 +7,7 @@ Keeps Agent 1 implementations aligned with the written Screening Checklist docum
 PRECISE_SCREENING_CHECKLIST_MARKDOWN = """=== Screening Checklist for initial filtering of potential opportunities ===
 
 Purpose
-- To identify and shortlist relevant opportunities for further review.
+- To identify and shortlist relevant opportuni  ties for further review.
 
 Always write user-visible text fields (title, description, step3 strings) in English.
 

@@ -29,6 +29,7 @@ from app.core.config import settings
 
 router = APIRouter()
 _TEST_CRAWLER_PLAYWRIGHT_FALLBACK_HOSTS = {"egp.gov.et", "www.egp.gov.et"}
+_TEST_CRAWLER_PLAYWRIGHT_FALLBACK_HOSTS.update({"tender.2merkato.com"})
 
 
 def _force_simple_pipeline_for_page(page: MonitoredPage) -> bool:

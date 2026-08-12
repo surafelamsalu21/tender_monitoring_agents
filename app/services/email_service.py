@@ -54,6 +54,21 @@ class EnhancedEmailService:
     def _utcnow_iso() -> str:
         return datetime.utcnow().isoformat()
 
+    @staticmethod
+    def _is_permanent_smtp_auth_error(exc: Exception) -> bool:
+        """
+        Detect non-retriable SMTP auth/policy failures (e.g. M365 SMTP AUTH disabled).
+        """
+        if isinstance(exc, smtplib.SMTPAuthenticationError):
+            return True
+        text = str(exc).lower()
+        markers = (
+            "smtpclientauthentication is disabled for the tenant",
+            "authentication unsuccessful",
+            "5.7.139",
+        )
+        return any(marker in text for marker in markers)
+
     def _retry_interval_minutes(self) -> int:
         return max(1, int(getattr(settings, "EMAIL_RETRY_INTERVAL_MINUTES", 30)))
 
@@ -456,7 +471,13 @@ class EnhancedEmailService:
                         error_message=str(exc),
                         tender_id=None,
                     )
-                    if attempts >= max_attempts:
+                    if self._is_permanent_smtp_auth_error(exc):
+                        summary["dropped"] += 1
+                        logger.error(
+                            "Dropping retry item after permanent SMTP auth failure: %s",
+                            recipient,
+                        )
+                    elif attempts >= max_attempts:
                         summary["dropped"] += 1
                         logger.error(
                             "Dropping retry item after max attempts (%s): %s",
@@ -526,11 +547,12 @@ class EnhancedEmailService:
                             logger.info("Successfully sent intelligent emails for: %s...", title_short)
                         else:
                             results['failed_sends'] += 1
+                            error_text = result.get('error') or result.get('message') or "Unknown send failure"
                             results['errors'].append({
                                 'tender_title': title_short + '...',
-                                'error': result['error']
+                                'error': error_text
                             })
-                            logger.error(f"Failed to send intelligent emails: {result['error']}")
+                            logger.error(f"Failed to send intelligent emails: {error_text}")
                     except Exception as e:
                         results['failed_sends'] += 1
                         results['errors'].append({
@@ -678,15 +700,21 @@ class EnhancedEmailService:
                         error_message=str(e),
                         tender_id=email_content.get('tender_id')
                     )
-                    self._queue_failed_recipient_retry(
-                        db,
-                        recipient_email=recipient_email,
-                        team_category=team_category,
-                        email_content=email_content,
-                        tender_ids=unique_ids,
-                        tender_title=str(tender_data.get('title') or 'Tender'),
-                        error_message=str(e),
-                    )
+                    if self._is_permanent_smtp_auth_error(e):
+                        logger.error(
+                            "Skipping retry queue for %s due to permanent SMTP auth failure",
+                            recipient_email,
+                        )
+                    else:
+                        self._queue_failed_recipient_retry(
+                            db,
+                            recipient_email=recipient_email,
+                            team_category=team_category,
+                            email_content=email_content,
+                            tender_ids=unique_ids,
+                            tender_title=str(tender_data.get('title') or 'Tender'),
+                            error_message=str(e),
+                        )
 
             emails_sent = len(sent_details)
             success = emails_sent > 0
