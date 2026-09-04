@@ -31,6 +31,47 @@ from app.models.page import MonitoredPage
 
 logger = logging.getLogger(__name__)
 _MIN_PAGE_ATTEMPTS = 2
+_TRANSIENT_NETWORK_MARKERS = (
+    "err_name_not_resolved",
+    "err_internet_disconnected",
+    "err_connection_refused",
+    "err_connection_reset",
+    "err_connection_timed_out",
+    "err_network_changed",
+    "err_address_unreachable",
+    "net::err_",
+)
+
+
+def _is_transient_network_error(error: str | None) -> bool:
+    low = (error or "").lower()
+    return any(marker in low for marker in _TRANSIENT_NETWORK_MARKERS)
+
+
+async def _goto_with_retry(page, url: str, *, wait_until: str, timeout: int | None = None):
+    """Retry once on transient DNS/network faults before surfacing the error."""
+    goto_kwargs: dict = {"wait_until": wait_until}
+    if timeout is not None:
+        goto_kwargs["timeout"] = timeout
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            return await page.goto(url, **goto_kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0 and _is_transient_network_error(str(exc)):
+                logger.warning(
+                    "Transient network error on goto(%s, %s): %s; retrying once.",
+                    url,
+                    wait_until,
+                    exc,
+                )
+                await asyncio.sleep(2)
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"goto failed for {url}")
 
 
 def _html_to_text(html: str) -> str:
@@ -725,7 +766,7 @@ async def _capture_ungm_listing(
     for wait_state in ("networkidle", "domcontentloaded", "commit"):
         try:
             timeout_ms = 60_000 if wait_state == "networkidle" else 45_000
-            await page.goto(listing_url, wait_until=wait_state, timeout=timeout_ms)
+            await _goto_with_retry(page, listing_url, wait_until=wait_state, timeout=timeout_ms)
             navigated = True
             break
         except Exception as exc:
@@ -857,7 +898,7 @@ async def _capture_2merkato_listing(
         for wait_state in ("networkidle", "domcontentloaded", "commit"):
             try:
                 timeout_ms = 60_000 if wait_state == "networkidle" else 45_000
-                await page.goto(page_url, wait_until=wait_state, timeout=timeout_ms)
+                await _goto_with_retry(page, page_url, wait_until=wait_state, timeout=timeout_ms)
                 navigated = True
                 break
             except Exception as exc:
@@ -953,7 +994,7 @@ async def _capture_egp_bids_listing(
     for wait_state in ("domcontentloaded", "networkidle", "commit"):
         try:
             timeout_ms = 70_000 if wait_state == "networkidle" else 45_000
-            await page.goto(listing_url, wait_until=wait_state, timeout=timeout_ms)
+            await _goto_with_retry(page, listing_url, wait_until=wait_state, timeout=timeout_ms)
             navigated = True
             break
         except Exception as exc:
@@ -1295,7 +1336,7 @@ async def _capture_eu_portal_listing(
         navigated = False
         for wait_state in ("domcontentloaded", "commit"):
             try:
-                await page.goto(page_url, wait_until=wait_state, timeout=45_000)
+                await _goto_with_retry(page, page_url, wait_until=wait_state, timeout=45_000)
                 navigated = True
                 break
             except Exception as exc:
@@ -1498,7 +1539,7 @@ async def _capture_paginated_listing(page, listing_url: str, wait_until: str) ->
         try:
             mode, target = next_target
             if mode == "goto":
-                await page.goto(target, wait_until=wait_until)
+                await _goto_with_retry(page, target, wait_until=wait_until)
             else:
                 await target.click()
                 await page.wait_for_load_state(wait_until)
@@ -1649,7 +1690,7 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
                     username = os.environ.get(user_env or "")
                     password = os.environ.get(pass_env or "")
 
-                    await page.goto(login_url, wait_until=wait_until)
+                    await _goto_with_retry(page, login_url, wait_until=wait_until)
                     await page.locator(selectors["username"]).first.fill(username)
                     await page.locator(selectors["password"]).first.fill(password)
                     await page.locator(selectors["submit"]).first.click()
@@ -1682,13 +1723,13 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
                     # then fall back to domcontentloaded for sites that never
                     # fire the "load" event.
                     try:
-                        await page.goto(nav_url, wait_until=wait_until, timeout=45_000)
+                        await _goto_with_retry(page, nav_url, wait_until=wait_until, timeout=45_000)
                     except Exception as goto_exc:
                         logger.info(
                             "Listing goto(%s) failed (%s); retrying with domcontentloaded.",
                             wait_until, goto_exc,
                         )
-                        await page.goto(nav_url, wait_until="domcontentloaded", timeout=45_000)
+                        await _goto_with_retry(page, nav_url, wait_until="domcontentloaded", timeout=45_000)
 
                     applied_filter = await _apply_undp_region_filter(page, listing_url)
                     if not applied_filter:

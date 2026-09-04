@@ -83,6 +83,24 @@ def _is_shell_capture(markdown: str, listing_urls: list[str]) -> bool:
     return len(text) < 500
 
 
+def _is_transient_network_error(error: str | None) -> bool:
+    """Playwright/Chromium network faults that are usually environmental, not site-specific."""
+    low = (error or "").lower()
+    return any(
+        marker in low
+        for marker in (
+            "err_name_not_resolved",
+            "err_internet_disconnected",
+            "err_connection_refused",
+            "err_connection_reset",
+            "err_connection_timed_out",
+            "err_network_changed",
+            "err_address_unreachable",
+            "net::err_",
+        )
+    )
+
+
 def _should_retry_with_playwright(url: str, markdown: str, listing_urls: list[str]) -> bool:
     """Whether a crawl4ai capture is weak enough to justify a Playwright retry."""
     if not _is_shell_capture(markdown, listing_urls):
@@ -141,10 +159,24 @@ async def harvest_for_page(page: MonitoredPage) -> HarvestResult:
                 meta["fallback_from"] = "crawl4ai_shell_capture"
                 playwright_result.session_meta = meta
                 return playwright_result
+            pw_error = playwright_result.error or "Playwright fallback failed"
+            if _is_transient_network_error(pw_error):
+                # Do not treat a DNS/outage as a quiet week — surface the real fault
+                # and skip Agent 1 instead of parsing an empty JS shell.
+                return HarvestResult(
+                    status="failed",
+                    page_url=url,
+                    error=pw_error,
+                    session_meta={
+                        "strategy": "crawl4ai",
+                        "playwright_fallback_failed": True,
+                        "transient_network_error": True,
+                    },
+                )
             logger.warning(
                 "Playwright fallback failed for %s: %s; keeping crawl4ai capture.",
                 url,
-                playwright_result.error,
+                pw_error,
             )
 
         shell_capture = _is_shell_capture(markdown, listing_urls)
