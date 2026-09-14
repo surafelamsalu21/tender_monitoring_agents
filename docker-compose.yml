@@ -10,6 +10,11 @@
 services:
   api:
     build: .
+    # Explicit resolvers avoid intermittent Docker Desktop DNS failures during
+    # parallel Playwright crawls (net::ERR_NAME_NOT_RESOLVED across many hosts).
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     ports:
       - "8000:8000"
     env_file:
