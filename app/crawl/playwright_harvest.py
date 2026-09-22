@@ -16,6 +16,8 @@ import logging
 import os
 import re
 import xml.etree.ElementTree as ET
+from datetime import datetime
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
@@ -651,6 +653,385 @@ def _looks_like_cloudflare_challenge(text: str, html: str) -> bool:
         or "/cdn-cgi/challenge-platform/" in low
         or "__cf_chl_" in low
     )
+
+
+def _links_look_like_challenge_artifacts(links: list[str]) -> bool:
+    if not links:
+        return True
+    normalized = [str(link or "").lower() for link in links]
+    return all(
+        ("cloudflare.com" in link) or ("challenge" in link)
+        for link in normalized
+    )
+
+
+def _is_developmentaid_tenders_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    return "developmentaid.org" in host and "/tenders/search" in path
+
+
+def _is_ethiojobs_consultancy_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    host = parsed.netloc.lower()
+    path = parsed.path.lower().rstrip("/")
+    return "ethiojobs.net" in host and path == "/jobs/consultancy"
+
+
+def _is_reportertenders_listing_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    return "reportertenders.com" in host and "/bid-category/" in path
+
+
+def _resolve_login_url_for_page(monitored: MonitoredPage, listing_url: str) -> str | None:
+    """
+    Resolve login URL with safe defaults.
+
+    Page-level `auth_login_url` always wins. The global login URL is only applied
+    to DevelopmentAid pages; otherwise it can accidentally force login attempts on
+    public portals such as ReporterTenders.
+    """
+    page_login_url = getattr(monitored, "auth_login_url", None)
+    if page_login_url:
+        return str(page_login_url)
+    if _is_developmentaid_tenders_url(listing_url):
+        return settings.PLAYWRIGHT_AUTH_LOGIN_URL
+    return None
+
+
+def _normalize_iso_date(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        m = re.match(r"^(\d{4}-\d{2}-\d{2})", raw)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _clean_text(text: str, max_chars: int = 260) -> str:
+    compact = " ".join((text or "").split()).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max_chars - 3].rstrip() + "..."
+
+
+def _set_query_param(url: str, key: str, value: str) -> str:
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params[key] = [value]
+    query = urlencode([(k, v) for k, vals in params.items() for v in vals])
+    return urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, query, parsed.fragment)
+    )
+
+
+def _developmentaid_rows_from_html(html: str, base_url: str) -> list[dict]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for a in soup.select("a[href]"):
+        href = urljoin(base_url, (a.get("href") or "").strip())
+        if "/tenders/view/" not in href.lower():
+            continue
+        title = _clean_text(a.get_text(" ", strip=True), 300)
+        if len(title) < 6 or href in seen:
+            continue
+        seen.add(href)
+        rows.append(
+            {
+                "title": title,
+                "reference": None,
+                "publication_date": None,
+                "deadline": None,
+                "detail_url": href,
+                "country": None,
+                "snippet": None,
+            }
+        )
+    return rows
+
+
+def _reportertenders_rows_from_html(html: str, base_url: str) -> list[dict]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for a in soup.select('a[href*="/bids/"]'):
+        href = urljoin(base_url, (a.get("href") or "").strip())
+        title = _clean_text(a.get_text(" ", strip=True), 320)
+        if not title or len(title) < 8 or href in seen:
+            continue
+        seen.add(href)
+        container = a.find_parent(["article", "li", "div"])
+        container_txt = _clean_text(container.get_text(" ", strip=True), 1400) if container else ""
+        m = re.search(r"(\d{2}/\d{2}/\d{4})", container_txt)
+        deadline = None
+        if m:
+            raw = m.group(1)
+            parts = raw.split("/")
+            if len(parts) == 3:
+                day, month, year = parts
+                deadline = f"{year}-{month}-{day}"
+        rows.append(
+            {
+                "title": title,
+                "reference": None,
+                "publication_date": None,
+                "deadline": deadline,
+                "detail_url": href,
+                "country": "Ethiopia",
+                "snippet": container_txt[:260] if container_txt else None,
+            }
+        )
+    return rows
+
+
+def _ethiojobs_rows_from_next_data_html(html: str) -> list[dict]:
+    match = re.search(
+        r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+        html or "",
+        re.S,
+    )
+    if not match:
+        return []
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return []
+    items = (
+        payload.get("props", {})
+        .get("pageProps", {})
+        .get("initialData", [])
+    )
+    if not isinstance(items, list):
+        return []
+
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title = _clean_text(str(item.get("title") or ""), 300)
+        slug = str(item.get("slug") or "").strip().strip("/")
+        if not title or not slug:
+            continue
+        detail_url = f"https://ethiojobs.net/job/{slug}"
+        if detail_url in seen:
+            continue
+        seen.add(detail_url)
+
+        company = None
+        company_obj = item.get("company")
+        if isinstance(company_obj, dict):
+            company = _clean_text(str(company_obj.get("name") or ""), 140) or None
+
+        location_bits = [
+            _clean_text(str(item.get("city") or ""), 120),
+            _clean_text(str(item.get("state") or ""), 120),
+            _clean_text(str(item.get("country") or ""), 120),
+        ]
+        location = ", ".join(part for part in location_bits if part)
+        snippet_parts = [company or "", location]
+        summary = _clean_text(
+            BeautifulSoup(str(item.get("requirement") or item.get("description") or ""), "html.parser").get_text(" ", strip=True),
+            240,
+        )
+        if summary:
+            snippet_parts.append(summary)
+        snippet = _clean_text(" | ".join(part for part in snippet_parts if part), 280) or None
+
+        rows.append(
+            {
+                "title": title,
+                "reference": None,
+                "publication_date": _normalize_iso_date(item.get("date_published")),
+                "deadline": _normalize_iso_date(item.get("date_expiry")),
+                "detail_url": detail_url,
+                "country": _clean_text(str(item.get("country") or ""), 80) or "Ethiopia",
+                "snippet": snippet,
+            }
+        )
+    return rows
+
+
+def _rows_to_listing_markdown(source_name: str, source_url: str, rows: list[dict]) -> str:
+    lines = [
+        f"{source_name} listing harvest.",
+        "",
+        f"Source URL: {source_url}",
+        f"Rows: {len(rows)}",
+        "",
+        "Title | Country | Published | Deadline | Link",
+    ]
+    for row in rows[:400]:
+        title = str(row.get("title") or "").strip()
+        country = str(row.get("country") or "unknown").strip() or "unknown"
+        pub = str(row.get("publication_date") or "").strip()
+        deadline = str(row.get("deadline") or "").strip()
+        detail = str(row.get("detail_url") or "").strip()
+        if not title or not detail:
+            continue
+        table_row = " | ".join(part for part in (title, country, pub, deadline, detail) if part)
+        lines.append(f"- {title}")
+        lines.append(f"  - Country: {country}")
+        if pub:
+            lines.append(f"  - Published: {pub}")
+        if deadline:
+            lines.append(f"  - Deadline: {deadline}")
+        lines.append(f"  - Link: {detail}")
+        snippet = str(row.get("snippet") or "").strip()
+        if snippet:
+            lines.append(f"  - Summary: {snippet}")
+        lines.append(f"  - Row: {table_row}")
+    return "\n".join(lines)
+
+
+def _ethiojobs_harvest_sync(listing_url: str, max_pages: int) -> tuple[str, list[str], str, int, list[dict]]:
+    pages = max(_MIN_PAGE_ATTEMPTS, min(int(max_pages or _MIN_PAGE_ATTEMPTS), 4))
+    rows: list[dict] = []
+    seen_links: set[str] = set()
+    html_pages: list[str] = []
+    pages_captured = 0
+    for page_num in range(1, pages + 1):
+        page_url = _set_query_param(listing_url, "page", str(page_num))
+        req = Request(
+            page_url,
+            headers={
+                "User-Agent": settings.DEVELOPMENTAID_USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        )
+        try:
+            with urlopen(req, timeout=45) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+        except Exception as exc:
+            logger.warning("Ethiojobs fetch failed page=%s: %s", page_num, exc)
+            break
+        html_pages.append(html)
+        page_rows = _ethiojobs_rows_from_next_data_html(html)
+        if not page_rows:
+            break
+        added_this_page = 0
+        for row in page_rows:
+            detail = str(row.get("detail_url") or "").strip()
+            if not detail or detail in seen_links:
+                continue
+            seen_links.add(detail)
+            rows.append(row)
+            added_this_page += 1
+        pages_captured += 1
+        if added_this_page == 0:
+            break
+
+    if not rows:
+        raise RuntimeError("Ethiojobs parser found no listings in __NEXT_DATA__ payload.")
+    markdown = _rows_to_listing_markdown("Ethiojobs consultancy", listing_url, rows)
+    links = [str(row.get("detail_url")) for row in rows if row.get("detail_url")]
+    return markdown, list(dict.fromkeys(links)), "\n".join(html_pages), max(pages_captured, 1), rows
+
+
+async def _ethiojobs_harvest(
+    listing_url: str, max_pages: int
+) -> tuple[str, list[str], str, int, list[dict]]:
+    return await asyncio.to_thread(_ethiojobs_harvest_sync, listing_url, max_pages)
+
+
+def _developmentaid_session_harvest_sync(
+    listing_url: str, max_pages: int
+) -> tuple[str, list[str], str, int, list[dict]]:
+    _ = max_pages  # Reserved for future paginated session crawling.
+    cookie = str(getattr(settings, "DEVELOPMENTAID_SESSION_COOKIE", "") or "").strip()
+    headers = {
+        "User-Agent": settings.DEVELOPMENTAID_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.developmentaid.org/",
+    }
+    if cookie:
+        headers["Cookie"] = cookie
+    req = Request(listing_url, headers=headers)
+    timeout_sec = int(getattr(settings, "DEVELOPMENTAID_HTTP_TIMEOUT_SEC", 45) or 45)
+    try:
+        with urlopen(req, timeout=timeout_sec) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        if int(getattr(exc, "code", 0) or 0) == 403:
+            if cookie:
+                raise RuntimeError(
+                    "DevelopmentAid returned HTTP 403 with DEVELOPMENTAID_SESSION_COOKIE. "
+                    "Refresh the cookie from a logged-in browser session."
+                ) from exc
+            raise RuntimeError(
+                "DevelopmentAid returned HTTP 403. Set DEVELOPMENTAID_SESSION_COOKIE in .env "
+                "from an authenticated browser session."
+            ) from exc
+        raise RuntimeError(f"DevelopmentAid HTTP error: {exc}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"DevelopmentAid network error: {exc}") from exc
+
+    text = _html_to_text(html)
+    if _looks_like_cloudflare_challenge(text, html):
+        if cookie:
+            raise RuntimeError(
+                "DevelopmentAid challenge page returned even with DEVELOPMENTAID_SESSION_COOKIE. "
+                "Refresh the cookie from a logged-in browser session."
+            )
+        raise RuntimeError(
+            "DevelopmentAid challenge page returned. Set DEVELOPMENTAID_SESSION_COOKIE in .env "
+            "from an authenticated browser session."
+        )
+
+    rows = _developmentaid_rows_from_html(html, listing_url)
+    if not rows:
+        raise RuntimeError(
+            "DevelopmentAid page loaded but no /tenders/view/ links were found. "
+            "Page structure may have changed or account access is limited."
+        )
+    markdown = _rows_to_listing_markdown("DevelopmentAid tenders", listing_url, rows)
+    links = [str(row.get("detail_url")) for row in rows if row.get("detail_url")]
+    return markdown, list(dict.fromkeys(links)), html, 1, rows
+
+
+async def _developmentaid_session_harvest(
+    listing_url: str, max_pages: int
+) -> tuple[str, list[str], str, int, list[dict]]:
+    return await asyncio.to_thread(_developmentaid_session_harvest_sync, listing_url, max_pages)
+
+
+def _reportertenders_harvest_sync(
+    listing_url: str,
+    max_pages: int,
+) -> tuple[str, list[str], str, int, list[dict]]:
+    _ = max_pages
+    req = Request(
+        listing_url,
+        headers={
+            "User-Agent": settings.DEVELOPMENTAID_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    )
+    with urlopen(req, timeout=45) as resp:
+        html = resp.read().decode("utf-8", errors="replace")
+    rows = _reportertenders_rows_from_html(html, listing_url)
+    if not rows:
+        raise RuntimeError("ReporterTenders parser found no /bids/ listing links.")
+    markdown = _rows_to_listing_markdown("ReporterTenders listings", listing_url, rows)
+    links = [str(row.get("detail_url")) for row in rows if row.get("detail_url")]
+    return markdown, list(dict.fromkeys(links)), html, 1, rows
+
+
+async def _reportertenders_harvest(
+    listing_url: str,
+    max_pages: int,
+) -> tuple[str, list[str], str, int, list[dict]]:
+    return await asyncio.to_thread(_reportertenders_harvest_sync, listing_url, max_pages)
 
 
 def _afdb_rss_fetch_page(page: int | None) -> bytes:
@@ -1577,12 +1958,32 @@ def _resolve_auth_selectors(monitored: MonitoredPage) -> dict[str, str]:
     return data
 
 
+def _read_auth_secret(env_name: str | None) -> str:
+    """
+    Resolve auth secrets from process env first, then settings-backed .env values.
+
+    This keeps backward compatibility with exported env vars while allowing users
+    to store CRAWL_AUTH_USERNAME/CRAWL_AUTH_PASSWORD in local `.env`.
+    """
+    key = str(env_name or "").strip()
+    if not key:
+        return ""
+    val = os.environ.get(key) or ""
+    if val.strip():
+        return val
+    if key == "CRAWL_AUTH_USERNAME":
+        return str(getattr(settings, "CRAWL_AUTH_USERNAME", "") or "")
+    if key == "CRAWL_AUTH_PASSWORD":
+        return str(getattr(settings, "CRAWL_AUTH_PASSWORD", "") or "")
+    return ""
+
+
 async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestResult:
     """Browser work only (Playwright async). See `harvest_with_playwright` for entry."""
     listing_url = monitored.url
+    max_p = _max_pages_for_listing_url(listing_url)
     wb_scope = _worldbank_scope_filter_value(listing_url)
     if _is_worldbank_procurement_url(listing_url) and wb_scope:
-        max_p = _max_pages_for_listing_url(listing_url)
         try:
             text, links, raw_json, pages_captured, structured_rows, prefilter_stats = (
                 await _worldbank_api_harvest(wb_scope, max_p)
@@ -1633,8 +2034,103 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
                 },
             )
 
+    if _is_ethiojobs_consultancy_url(listing_url):
+        try:
+            text, links, raw_html, pages_captured, structured_rows = await _ethiojobs_harvest(
+                listing_url,
+                max_p,
+            )
+            return HarvestResult(
+                status="success",
+                page_url=listing_url,
+                markdown=text,
+                html=raw_html,
+                listing_urls=links,
+                detail_urls=links,
+                session_meta={
+                    "strategy": "playwright",
+                    "backend": "ethiojobs_next_data",
+                    "structured_source": True,
+                    "char_count": len(text),
+                    "link_count": len(links),
+                    "pages_captured": pages_captured,
+                    "max_pages": max_p,
+                    "listing_rows_v1": structured_rows,
+                    "raw_count": len(structured_rows),
+                },
+            )
+        except Exception as exc:
+            logger.warning("Ethiojobs pre-harvest failed for %s: %s", listing_url, exc)
+
+    if _is_reportertenders_listing_url(listing_url):
+        try:
+            text, links, raw_html, pages_captured, structured_rows = await _reportertenders_harvest(
+                listing_url,
+                max_p,
+            )
+            return HarvestResult(
+                status="success",
+                page_url=listing_url,
+                markdown=text,
+                html=raw_html,
+                listing_urls=links,
+                detail_urls=links,
+                session_meta={
+                    "strategy": "playwright",
+                    "backend": "reportertenders_html",
+                    "structured_source": True,
+                    "char_count": len(text),
+                    "link_count": len(links),
+                    "pages_captured": pages_captured,
+                    "max_pages": max_p,
+                    "listing_rows_v1": structured_rows,
+                    "raw_count": len(structured_rows),
+                },
+            )
+        except Exception as exc:
+            logger.warning("ReporterTenders pre-harvest failed for %s: %s", listing_url, exc)
+
+    pre_harvest_error: str | None = None
+    if _is_developmentaid_tenders_url(listing_url):
+        try:
+            text, links, raw_html, pages_captured, structured_rows = await _developmentaid_session_harvest(
+                listing_url,
+                max_p,
+            )
+            return HarvestResult(
+                status="success",
+                page_url=listing_url,
+                markdown=text,
+                html=raw_html,
+                listing_urls=links,
+                detail_urls=links,
+                session_meta={
+                    "strategy": "playwright",
+                    "backend": "developmentaid_session",
+                    "structured_source": True,
+                    "char_count": len(text),
+                    "link_count": len(links),
+                    "pages_captured": pages_captured,
+                    "max_pages": max_p,
+                    "listing_rows_v1": structured_rows,
+                    "raw_count": len(structured_rows),
+                },
+            )
+        except Exception as exc:
+            pre_harvest_error = str(exc)
+            logger.warning(
+                "DevelopmentAid session pre-harvest failed for %s: %s; continuing with browser fallback.",
+                listing_url,
+                exc,
+            )
+
     nav_url = _afdb_navigation_url(listing_url)
-    login_url = getattr(monitored, "auth_login_url", None) or settings.PLAYWRIGHT_AUTH_LOGIN_URL
+    login_url = _resolve_login_url_for_page(monitored, listing_url)
+    devaid_cookie = str(getattr(settings, "DEVELOPMENTAID_SESSION_COOKIE", "") or "").strip()
+    if _is_developmentaid_tenders_url(listing_url) and devaid_cookie:
+        # For DevelopmentAid, prefer session-cookie auth over form login.
+        # Login page is often challenge-protected and not reliably automatable.
+        login_url = None
     user_env = getattr(monitored, "auth_username_env", None) or settings.PLAYWRIGHT_AUTH_USERNAME_ENV
     pass_env = getattr(monitored, "auth_password_env", None) or settings.PLAYWRIGHT_AUTH_PASSWORD_ENV
 
@@ -1687,16 +2183,14 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
                 page.set_default_timeout(settings.PLAYWRIGHT_TIMEOUT_MS)
 
                 if login_url:
-                    username = os.environ.get(user_env or "")
-                    password = os.environ.get(pass_env or "")
+                    username = _read_auth_secret(user_env)
+                    password = _read_auth_secret(pass_env)
 
                     await _goto_with_retry(page, login_url, wait_until=wait_until)
                     await page.locator(selectors["username"]).first.fill(username)
                     await page.locator(selectors["password"]).first.fill(password)
                     await page.locator(selectors["submit"]).first.click()
                     await page.wait_for_load_state(wait_until)
-
-                max_p = _max_pages_for_listing_url(listing_url)
 
                 if _is_ungm_url(listing_url):
                     # UNGM handler does its own goto with networkidle/load fallback.
@@ -1766,10 +2260,13 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
                 await browser.close()
     except Exception as e:
         logger.exception("Playwright harvest failed for page_id=%s", getattr(monitored, "id", None))
+        err = str(e)
+        if pre_harvest_error:
+            err = f"{err} | pre-harvest: {pre_harvest_error}"
         return HarvestResult(
             status="failed",
             page_url=listing_url,
-            error=str(e),
+            error=err,
             session_meta={"strategy": "playwright"},
         )
 
@@ -1777,6 +2274,16 @@ async def _harvest_with_playwright_async(monitored: MonitoredPage) -> HarvestRes
         text = _html_to_text(html)
     if not links:
         links = _extract_links(html, listing_url)
+    if _looks_like_cloudflare_challenge(text, html) and _links_look_like_challenge_artifacts(links):
+        err = "Cloudflare challenge page captured instead of listing content."
+        if pre_harvest_error:
+            err = f"{err} pre-harvest: {pre_harvest_error}"
+        return HarvestResult(
+            status="failed",
+            page_url=listing_url,
+            error=err,
+            session_meta={"strategy": "playwright", "challenge_page": True},
+        )
     return HarvestResult(
         status="success",
         page_url=listing_url,
@@ -1805,13 +2312,16 @@ async def harvest_with_playwright(monitored: MonitoredPage) -> HarvestResult:
     )
 
     listing_url = monitored.url
-    login_url = getattr(monitored, "auth_login_url", None) or settings.PLAYWRIGHT_AUTH_LOGIN_URL
+    login_url = _resolve_login_url_for_page(monitored, listing_url)
+    devaid_cookie = str(getattr(settings, "DEVELOPMENTAID_SESSION_COOKIE", "") or "").strip()
+    if _is_developmentaid_tenders_url(listing_url) and devaid_cookie:
+        login_url = None
     user_env = getattr(monitored, "auth_username_env", None) or settings.PLAYWRIGHT_AUTH_USERNAME_ENV
     pass_env = getattr(monitored, "auth_password_env", None) or settings.PLAYWRIGHT_AUTH_PASSWORD_ENV
 
     if login_url:
-        username = os.environ.get(user_env or "") if user_env else ""
-        password = os.environ.get(pass_env or "") if pass_env else ""
+        username = _read_auth_secret(user_env)
+        password = _read_auth_secret(pass_env)
         if not username.strip() or not password.strip():
             return HarvestResult(
                 status="failed",

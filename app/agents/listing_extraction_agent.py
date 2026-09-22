@@ -169,6 +169,57 @@ def _fallback_markdown_links(md: str, base_url: str) -> List[Dict[str, Any]]:
     return out[:100]
 
 
+def _reportertenders_rows(md: str, base_url: str) -> List[Dict[str, Any]]:
+    """
+    Deterministic extraction for reportertenders.com listing pages.
+
+    The page is navigation-heavy and often too long for the fast LLM prompt budget.
+    Pull bid detail links directly from markdown links to avoid losing rows.
+    """
+    if "reportertenders.com" not in (md or "").lower() and "reportertenders.com" not in (base_url or "").lower():
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for m in re.finditer(r"\[([^\]]{8,1200})\]\(([^)]+)\)", md or ""):
+        title = re.sub(r"\s+", " ", m.group(1)).strip()
+        href = _normalize_row_url(m.group(2), base_url)
+        low_href = href.lower()
+        if "reportertenders.com/bids/" not in low_href:
+            continue
+        if not title or title.lower() in {"ad description", "advertisement"}:
+            continue
+        if href in seen:
+            continue
+        seen.add(href)
+        out.append({"title": title, "url": href, "date": "", "description": ""})
+    return out[:120]
+
+
+def _truncate_markdown_with_middle(page_content: str, max_chars: int) -> str:
+    """
+    Keep head + middle + tail slices for very long pages.
+
+    Some tender boards place notices far below category/menu blocks. A head-only
+    truncation misses those rows and returns false negatives.
+    """
+    if len(page_content) <= max_chars:
+        return page_content
+    budget = max(1200, max_chars - 300)
+    head_n = max(600, int(budget * 0.45))
+    mid_n = max(400, int(budget * 0.35))
+    tail_n = max(300, budget - head_n - mid_n)
+    n = len(page_content)
+    mid_start = max(0, (n // 2) - (mid_n // 2))
+    mid_end = min(n, mid_start + mid_n)
+    head = page_content[:head_n]
+    middle = page_content[mid_start:mid_end]
+    tail = page_content[-tail_n:]
+    return (
+        f"{head}\n\n[... truncated to {max_chars} chars: middle excerpt ...]\n\n"
+        f"{middle}\n\n[... tail excerpt ...]\n\n{tail}"
+    )
+
+
 class ListingExtractionAgent:
     """Single LLM call: page markdown → flat tender rows."""
 
@@ -178,11 +229,7 @@ class ListingExtractionAgent:
 
     @staticmethod
     def truncate_markdown(page_content: str, max_chars: int) -> str:
-        if len(page_content) <= max_chars:
-            return page_content
-        head = page_content[: max_chars - 220]
-        tail = page_content[-180:]
-        return f"{head}\n\n[... truncated to {max_chars} chars for speed ...]\n\n{tail}"
+        return _truncate_markdown_with_middle(page_content, max_chars)
 
     async def extract_listings(
         self,
@@ -245,6 +292,14 @@ Output the JSON array only."""
             # page", which is a real answer — not a parse failure.
             model_reported_no_rows = parsed is not None and not parsed
             out = _rows_from_parsed_dicts(parsed or [])
+            if not out:
+                deterministic = _reportertenders_rows(body, base)
+                if deterministic:
+                    logger.info(
+                        "ListingExtractionAgent: deterministic reportertenders parse (%s row(s))",
+                        len(deterministic),
+                    )
+                    out = deterministic
             if not out:
                 coerced = _rows_from_string_url_json(raw)
                 if coerced:

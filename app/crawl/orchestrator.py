@@ -68,6 +68,10 @@ def _is_shell_capture(markdown: str, listing_urls: list[str]) -> bool:
         "developer tools are not permitted",
         "close devtools",
         "inspect close devtools required",
+        "just a moment",
+        "attention required",
+        "cf-ray",
+        "cloudflare",
         "enable javascript",
         "javascript is required",
         "please enable js",
@@ -81,6 +85,21 @@ def _is_shell_capture(markdown: str, listing_urls: list[str]) -> bool:
         return False
 
     return len(text) < 500
+
+
+def _is_reportertenders_low_signal_capture(url: str, markdown: str, listing_urls: list[str]) -> bool:
+    parsed = urlparse(url or "")
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    if "reportertenders.com" not in host:
+        return False
+    if "/bid-category/" not in path:
+        return False
+    bid_links = [link for link in (listing_urls or []) if "/bids/" in str(link).lower()]
+    # Reporter listings are expected to expose many /bids/ detail links. A
+    # capture with only nav links causes Agent 1 to return zero rows.
+    text_len = len((markdown or "").strip())
+    return len(bid_links) == 0 or (len(bid_links) < 2 and text_len < 6000)
 
 
 def _is_transient_network_error(error: str | None) -> bool:
@@ -103,6 +122,14 @@ def _is_transient_network_error(error: str | None) -> bool:
 
 def _should_retry_with_playwright(url: str, markdown: str, listing_urls: list[str]) -> bool:
     """Whether a crawl4ai capture is weak enough to justify a Playwright retry."""
+    if _is_reportertenders_low_signal_capture(url, markdown, listing_urls):
+        logger.info(
+            "crawl4ai low-signal capture for ReporterTenders %s (chars=%s links=%s): forcing fallback",
+            url,
+            len((markdown or "").strip()),
+            len(listing_urls or []),
+        )
+        return True
     if not _is_shell_capture(markdown, listing_urls):
         return False
     # Hosts known to need a browser are always retried; everything else is

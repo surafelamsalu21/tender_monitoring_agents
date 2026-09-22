@@ -5,7 +5,6 @@ app/api/routes/system.py
 from typing import Dict, Any, List, Literal, Optional
 from datetime import datetime, timedelta
 import logging
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -22,14 +21,12 @@ from app.agents import TenderAgent
 from app.agents.agent2 import TenderDetailAgent
 from app.agents.agent3 import EmailComposerAgent
 from app.services.scraper import TenderScraper
-from app.crawl.orchestrator import _flatten_scrape_links
+from app.crawl.orchestrator import _flatten_scrape_links, _should_retry_with_playwright
 from app.utils.listing_prep import dual_markdown_for_agent1_and_expiry
 from app.pipeline.crawl_artifact import crawl_artifact_from_scraper_dict
 from app.core.config import settings
 
 router = APIRouter()
-_TEST_CRAWLER_PLAYWRIGHT_FALLBACK_HOSTS = {"egp.gov.et", "www.egp.gov.et"}
-_TEST_CRAWLER_PLAYWRIGHT_FALLBACK_HOSTS.update({"tender.2merkato.com"})
 
 
 def _force_simple_pipeline_for_page(page: MonitoredPage) -> bool:
@@ -589,11 +586,10 @@ async def test_crawler(request: TestCrawlerRequest):
         if result['status'] == 'success':
             markdown = result.get('markdown', '') or ''
             links = _flatten_scrape_links(result.get('links'))
-            host = (urlparse(url).netloc or "").lower()
-            shell_like_capture = len(markdown.strip()) < 300 and len(links) == 0
-            if shell_like_capture and host in _TEST_CRAWLER_PLAYWRIGHT_FALLBACK_HOSTS:
+            should_retry = _should_retry_with_playwright(url, markdown, links)
+            if should_retry:
                 logger.warning(
-                    "crawl4ai test looked shell-like for %s (chars=%s, links=%s); trying playwright fallback.",
+                    "crawl4ai test looked shell-like/challenge-like for %s (chars=%s, links=%s); trying playwright fallback.",
                     url,
                     len(markdown),
                     len(links),
@@ -625,6 +621,14 @@ async def test_crawler(request: TestCrawlerRequest):
                         'char_count': len(markdown),
                     }
                 logger.warning("Playwright shell fallback failed for %s: %s", url, pw.error)
+                return {
+                    'status': 'failed',
+                    'url': url,
+                    'error': (
+                        "The page looks JavaScript/anti-bot protected in crawl4ai and "
+                        f"Playwright fallback failed: {pw.error or 'unknown error'}"
+                    ),
+                }
 
             logger.info(f"Crawler test successful for {url} using crawl4ai")
             return {
@@ -648,6 +652,7 @@ async def test_crawler(request: TestCrawlerRequest):
         error_lower = error_text.lower()
         should_try_playwright = (
             "ungm.org" in url.lower()
+            or "developmentaid.org" in url.lower()
             or "timeout" in error_lower
             or "acs-goto" in error_lower
             or "javascript" in error_lower

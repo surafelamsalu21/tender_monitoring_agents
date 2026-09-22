@@ -227,6 +227,13 @@ class Settings(BaseSettings):
     PLAYWRIGHT_AUTH_PASSWORD_ENV: str = Field(
         default="CRAWL_AUTH_PASSWORD", env="PLAYWRIGHT_AUTH_PASSWORD_ENV"
     )
+    # Optional direct values (kept in local .env) for browser login flows.
+    CRAWL_AUTH_USERNAME: Optional[str] = Field(
+        default=None, env="CRAWL_AUTH_USERNAME"
+    )
+    CRAWL_AUTH_PASSWORD: Optional[str] = Field(
+        default=None, env="CRAWL_AUTH_PASSWORD"
+    )
     PLAYWRIGHT_AUTH_USER_SELECTOR: str = Field(
         default='input[name="username"], input[name="email"], input[name="user"], '
         'input[type="email"]',
@@ -239,6 +246,22 @@ class Settings(BaseSettings):
     PLAYWRIGHT_AUTH_SUBMIT_SELECTOR: str = Field(
         default='button[type="submit"], input[type="submit"]',
         env="PLAYWRIGHT_AUTH_SUBMIT_SELECTOR",
+    )
+    # Optional cookie string copied from an authenticated browser session for
+    # DevelopmentAid tenders (used when Cloudflare blocks anonymous fetches).
+    DEVELOPMENTAID_SESSION_COOKIE: Optional[str] = Field(
+        default=None, env="DEVELOPMENTAID_SESSION_COOKIE"
+    )
+    DEVELOPMENTAID_HTTP_TIMEOUT_SEC: int = Field(
+        default=45, env="DEVELOPMENTAID_HTTP_TIMEOUT_SEC"
+    )
+    DEVELOPMENTAID_USER_AGENT: str = Field(
+        default=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        ),
+        env="DEVELOPMENTAID_USER_AGENT",
     )
 
     # AI Models
