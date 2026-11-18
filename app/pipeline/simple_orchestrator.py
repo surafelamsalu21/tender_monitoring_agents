@@ -37,6 +37,49 @@ _EA_POLICY_TERMS = (
 )
 
 
+_CAPACITY_DELIVERABLE = re.compile(
+    r"\b("
+    r"training manuals?|facilitator guides?|"
+    r"organi[sz]ational systems?|"
+    r"financial management|financial control and compliance|"
+    r"monitoring, evaluation, accountability and learning|\bmeal\b|"
+    r"policy analysis|advocacy strategy"
+    r")\b",
+    re.I,
+)
+_CAPACITY_VETO = re.compile(
+    r"\b("
+    r"external audit|audit services|auditing services|"
+    r"radio airtime|media production|"
+    r"motorbike|motorcycle|battery-operated"
+    r")\b",
+    re.I,
+)
+
+
+def _is_institutional_capacity_consultancy(tender: Dict[str, Any]) -> bool:
+    """Keep Ethiopia/East Africa firm consultancies that build institutional capacity.
+
+    Covers training manuals, financial-management systems, MEAL, and policy or
+    advocacy capacity, including when the client is a civil society organization.
+    The title is often only "Invitation for Consultancy Service", so the lots
+    in the description are what make it relevant.
+    """
+    screening = tender.get("screening") or {}
+    step3 = screening.get("step3") or {}
+    country = str(step3.get("country") or "")
+    title = str(tender.get("title") or "")
+    description = str(tender.get("description") or "")
+    hay = f"{title}\n{description}"
+    if _CAPACITY_VETO.search(title):
+        return False
+    if not is_geography_allowed(country, title=title, description=description):
+        return False
+    if not re.search(r"\b(consultancy|terms of reference|\btors?\b)\b", hay, re.I):
+        return False
+    return _CAPACITY_DELIVERABLE.search(hay) is not None
+
+
 def _is_ea_policy_advisory_allowance(tender: Dict[str, Any]) -> bool:
     """Allow specific EA policy advisory opportunities to pass mission/sector/activity gates."""
     screening = tender.get("screening") or {}
@@ -218,15 +261,17 @@ async def run_simple_pipeline(
         for tender in screened_tenders:
             if bool((tender.get("screening") or {}).get("passes_filter")):
                 continue
-            if _is_ea_policy_advisory_allowance(tender):
+            if _is_ea_policy_advisory_allowance(tender) or _is_institutional_capacity_consultancy(tender):
                 screening = tender.setdefault("screening", {})
                 step1 = screening.setdefault("step1", {})
                 step1["mission_alignment"] = True
                 step1["sector_relevance"] = True
                 step1["activity_fit"] = True
-                if "yes_count" not in screening or int(screening.get("yes_count") or 0) < 3:
-                    screening["yes_count"] = max(3, int(screening.get("yes_count") or 0))
+                step1["geographic_fit"] = True
+                step1["eligibility_quick_check"] = True
+                screening["yes_count"] = 5
                 screening["passes_filter"] = True
+                screening["unrelated_to_precise_scope"] = False
                 all_tenders.append(tender)
     else:
         all_tenders = []

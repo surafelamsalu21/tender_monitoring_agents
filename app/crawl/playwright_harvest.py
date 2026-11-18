@@ -673,10 +673,17 @@ def _is_developmentaid_tenders_url(url: str) -> bool:
 
 
 def _is_ethiojobs_consultancy_url(url: str) -> bool:
+    """Ethiojobs consultancy category, including the renamed listing path.
+
+    The site permanently redirects ``/jobs/consultancy`` to
+    ``/jobs/consultancy-and-training``. Both addresses are the same listing.
+    """
     parsed = urlparse(url or "")
     host = parsed.netloc.lower()
     path = parsed.path.lower().rstrip("/")
-    return "ethiojobs.net" in host and path == "/jobs/consultancy"
+    if "ethiojobs.net" not in host:
+        return False
+    return path == "/jobs/consultancy" or path.startswith("/jobs/consultancy-")
 
 
 def _is_reportertenders_listing_url(url: str) -> bool:
@@ -838,13 +845,20 @@ def _ethiojobs_rows_from_next_data_html(html: str) -> list[dict]:
         ]
         location = ", ".join(part for part in location_bits if part)
         snippet_parts = [company or "", location]
-        summary = _clean_text(
-            BeautifulSoup(str(item.get("requirement") or item.get("description") or ""), "html.parser").get_text(" ", strip=True),
-            240,
+        # The assignment lives in description. requirement is the "About you"
+        # block, which often says "individual consultants" and hides the scope.
+        assignment = _clean_text(
+            BeautifulSoup(str(item.get("description") or ""), "html.parser").get_text(" ", strip=True),
+            4500,
         )
+        requirement = _clean_text(
+            BeautifulSoup(str(item.get("requirement") or ""), "html.parser").get_text(" ", strip=True),
+            400,
+        )
+        summary = _clean_text(" ".join(part for part in (assignment, requirement) if part), 4800)
         if summary:
             snippet_parts.append(summary)
-        snippet = _clean_text(" | ".join(part for part in snippet_parts if part), 280) or None
+        snippet = _clean_text(" | ".join(part for part in snippet_parts if part), 5000) or None
 
         rows.append(
             {

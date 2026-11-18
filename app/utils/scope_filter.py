@@ -36,7 +36,7 @@ _INDIVIDUAL_PATTERNS: tuple[re.Pattern[str], ...] = (
 _FIRM_ELIGIBLE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(firms?|companies|companys|organisations?|organizations?|institutions?)\s+(are\s+)?(also\s+)?(invited|eligible|encouraged|may\s+apply)\b"),
     re.compile(r"\bor\s+(consulting\s+)?firms?\b"),
-    re.compile(r"\bfirms?\s+or\s+individuals?\b"),
+    re.compile(r"\bfirms?,?\s+or\s+individuals?\b"),
     re.compile(r"\bindividuals?\s+(and|or)\s+(consulting\s+)?firms?\b"),
     re.compile(r"\b(request\s+for\s+proposals?|rfp)\b.*\bfirms?\b"),
 )

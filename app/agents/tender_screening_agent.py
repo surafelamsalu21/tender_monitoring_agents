@@ -50,6 +50,7 @@ Step 1 criteria:
    POLICY ADVISORY ALLOWANCE (EA ONLY): For Ethiopia/East-Africa opportunities, treat mission_alignment as YES when the core advisory scope is explicitly about economic policy, financial architecture reform, or public financial management reform with institutional advisory/coordination support (not supply/construction and not generic admin support).
    NO for: pure goods supply (vehicles, tools, equipment, drones, cameras, spare parts, office supplies) with no substantive advisory component; construction/infrastructure (WASH, roads, buildings, wells, boreholes, water infrastructure, renovation); construction supervision/works supervision/site engineering oversight (even when called "consultancy"); monitoring/verification/TPM of water, WASH, infrastructure, or humanitarian projects; "Productive Use of Water" or rural water supply projects (NOT the same as PUE); media/communications; generic buyer services (security, cleaning, catering, recruitment, audit, translation, printing); transport regulation/enforcement; legal/justice sector work; governance reform not targeting private sector; social/inclusion programmes without enterprise focus; environmental/biodiversity work with no private sector lens; general programme evaluations of "development" or "resilience" or WASH programmes where the programme subject is NOT in energy/agri/SME/climate; architecture or construction supervision.
    KEY TEST: "Does the core deliverable help firms, farms, or industries?" If NO → mission_alignment=false.
+   INSTITUTIONAL CAPACITY ALLOWANCE (EA ONLY): For Ethiopia/East-Africa firm consultancies, set mission_alignment, sector_relevance, and activity_fit to YES when the deliverable is training manuals, facilitator guides, organizational systems, financial management and compliance systems, MEAL systems, or evidence-based policy/advocacy capacity. This includes assignments whose client is a civil society organization. A generic title such as "Invitation for Consultancy Service" still qualifies when the description states those deliverables. This allowance does not cover external audit, goods supply, media production, construction, or WASH infrastructure.
 
 2. sector_relevance:
    YES if the WORK ITSELF is connected to at least one of:
@@ -98,8 +99,9 @@ Step 1 criteria:
    YES if for-profit consulting firms are eligible, OR eligibility is unclear (not explicitly restricted).
    NO if restricted to: NGOs only, UN agencies only, government only, universities only, or INDIVIDUALS only.
    CRITICAL: "Individual Consultant", "Individual Contractor", "National Individual Consultant", "International Individual Consultant" roles are for INDIVIDUAL PERSONS ONLY, not firms. Score eligibility=false for ALL such roles — a consulting firm cannot apply.
-   YES examples: RFP to firms/companies, eligibility not mentioned.
-   NO examples: "Individual consultant assignment", "Individual contractor", "National consultant (individual)".
+   YES examples: RFP to firms/companies, eligibility not mentioned, "consultancy firms, or individual consultants".
+   When firms are invited together with individuals ("firms, or individual consultants", "firms or individuals"), eligibility=YES. A firm can bid.
+   NO examples: "Individual consultant assignment", "Individual contractor", "National consultant (individual)" with no firm invited.
 
 engagement (required on every row):
 - advisory_only — advisory/consulting is the core; goods minor or absent.
@@ -250,7 +252,7 @@ class TenderScreeningAgent:
                     "title": b["title"],
                     "url": b["url"],
                     "date": b.get("date") or "",
-                    "description": (b.get("description") or "")[:1200],
+                    "description": (b.get("description") or "")[:4000],
                 }
                 for b in batch
             ]

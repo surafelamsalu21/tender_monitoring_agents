@@ -147,6 +147,15 @@ async def harvest_for_page(page: MonitoredPage) -> HarvestResult:
     url = page.url
     raw = (page.crawl_strategy or "crawl4ai").strip().lower()
 
+    # Ethiojobs listings are server-rendered, so a crawl4ai capture looks healthy
+    # and never falls through to the structured parser. Read __NEXT_DATA__ directly.
+    from app.crawl.playwright_harvest import _is_ethiojobs_consultancy_url
+
+    if _is_ethiojobs_consultancy_url(url):
+        from app.crawl.playwright_harvest import harvest_with_playwright
+
+        return await harvest_with_playwright(page)
+
     if raw == "un_careers":
         from app.crawl.un_careers import harvest_un_careers
 
